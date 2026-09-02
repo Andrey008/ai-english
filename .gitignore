@@ -1,0 +1,38 @@
+# Project documentation (PRD, epics, stories, status tracking) is local-only working
+# material for development with AI assistants — not committed to the repo.
+/Docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Android / Gradle
+node_modules/
+.gradle/
+build/
+*.iml
+.idea/
+local.properties
+*.apk
+*.aab
+
+# macOS
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Logs and local data
+*.log
+/models/
+/data/
+/logs/
