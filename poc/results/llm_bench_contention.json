@@ -1,0 +1,70 @@
+[
+  {
+    "model": "qwen2.5:32b",
+    "warmup_s": 9.99,
+    "runs": [
+      {
+        "prompt": "In one short sentence, what's a good way to practice spoken English daily?",
+        "first_token_latency_s": 0.399,
+        "total_latency_s": 2.557,
+        "gen_only_s": 2.158,
+        "approx_tokens": 21,
+        "approx_tokens_per_s": 9.73,
+        "reply_preview": "A good way to practice spoken English daily is to engage in conversations with native speakers or use language exchange apps."
+      },
+      {
+        "prompt": "Explain, in 3-4 sentences, why small talk is hard for non-native speakers and give one concrete tip to get better at it.",
+        "first_token_latency_s": 0.698,
+        "total_latency_s": 10.713,
+        "gen_only_s": 10.016,
+        "approx_tokens": 89,
+        "approx_tokens_per_s": 8.89,
+        "reply_preview": "Small talk can be challenging for non-native speakers because it often relies on colloquial language, cultural nuances, and idiomatic expressions that are not typically covered in language learning co"
+      },
+      {
+        "prompt": "Tell me a short (5-6 sentence) story about a neighbor complaining about noise, written in a casual conversational tone.",
+        "first_token_latency_s": 0.377,
+        "total_latency_s": 11.894,
+        "gen_only_s": 11.517,
+        "approx_tokens": 97,
+        "approx_tokens_per_s": 8.42,
+        "reply_preview": "Hey, you remember last night when it felt like the whole street was vibing to some late-night tunes? Well, our neighbor, Mrs. Thompson, came over this morning, grumbling about how she couldn't get a w"
+      }
+    ],
+    "ollama_ps": "NAME           ID              SIZE     PROCESSOR    CONTEXT    UNTIL              \nqwen2.5:32b    9f13ba1299af    28 GB    100% GPU     32768      4 minutes from now"
+  },
+  {
+    "model": "gemma2:27b",
+    "warmup_s": 7.69,
+    "runs": [
+      {
+        "prompt": "In one short sentence, what's a good way to practice spoken English daily?",
+        "first_token_latency_s": 0.521,
+        "total_latency_s": 1.953,
+        "gen_only_s": 1.432,
+        "approx_tokens": 14,
+        "approx_tokens_per_s": 9.78,
+        "reply_preview": "Talk to yourself, a friend, or even a mirror about anything that interests you. \n\n\n"
+      },
+      {
+        "prompt": "Explain, in 3-4 sentences, why small talk is hard for non-native speakers and give one concrete tip to get better at it.",
+        "first_token_latency_s": 0.781,
+        "total_latency_s": 8.908,
+        "gen_only_s": 8.127,
+        "approx_tokens": 83,
+        "approx_tokens_per_s": 10.21,
+        "reply_preview": "Small talk is hard for non-native speakers because it relies heavily on cultural context, idioms, and subtle nonverbal cues that can be difficult to grasp.  \n\nUnderstanding humor, sarcasm, and appropr"
+      },
+      {
+        "prompt": "Tell me a short (5-6 sentence) story about a neighbor complaining about noise, written in a casual conversational tone.",
+        "first_token_latency_s": 0.527,
+        "total_latency_s": 7.289,
+        "gen_only_s": 6.762,
+        "approx_tokens": 66,
+        "approx_tokens_per_s": 9.76,
+        "reply_preview": "Ugh, so my neighbor came knocking last night, all grumpy. Apparently, they thought I was having a wild party because of some thumping they heard. Turns out it was just me trying out a new workout rout"
+      }
+    ],
+    "ollama_ps": "NAME          ID              SIZE     PROCESSOR    CONTEXT    UNTIL              \ngemma2:27b    53261bc9c192    16 GB    100% GPU     8192       4 minutes from now"
+  }
+]

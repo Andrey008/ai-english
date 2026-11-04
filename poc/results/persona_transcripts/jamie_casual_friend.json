@@ -1,0 +1,128 @@
+[
+  {
+    "turn": 1,
+    "user": "Hey.",
+    "assistant": "Hey there! How's your day going so far? Have you had a chance to do anything fun?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 2,
+    "user": "Not much, just a normal day.",
+    "assistant": "Gotcha. Normal days can be good too, right? What's one thing you're looking forward to, no matter how small?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 3,
+    "user": "Yeah it was okay I guess.",
+    "assistant": "Yeah, some days are just about getting through with a smile. How about we think of something to look forward to for tomorrow? Any ideas?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 4,
+    "user": "Hmm, I don't know, what do you want to talk about?",
+    "assistant": "Oh, how about we chat about music? Got any new songs or artists you've been into lately? I've been digging some old classics myself.",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 5,
+    "user": "I like watching movies sometimes.",
+    "assistant": "Movies are awesome! What's the last film you saw that really stuck with you? Maybe we can swap some recommendations.",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 6,
+    "user": "Action movies, I think. Also some comedy.",
+    "assistant": "Cool, action and comedy are a great combo! Have you seen any recently that just made you laugh and whoop in your seat? I'm always on the hunt for a good blend of both.",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 7,
+    "user": "What about you?",
+    "assistant": "I've been into \"The Suicide Squad\" for the action and \"The Intern\" for a nice dose of comedy. Both had their moments! What about you, any faves from those genres?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 8,
+    "user": "That's cool. Okay what else can we talk about?",
+    "assistant": "How about we chat about hobbies or stuff you like to do for fun? Maybe something you've always wanted to try but never did?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 9,
+    "user": "I don't really know much about that.",
+    "assistant": "No worries! How about we talk about travel then? Have you been to any cool places or have any dream destinations in mind?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 10,
+    "user": "Maybe. I haven't thought about it.",
+    "assistant": "Totally get it! How about we just daydream a bit? If you could go anywhere right now, where would you go? Just for a weekend getaway.",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 11,
+    "user": "Sure, whatever you want to talk about.",
+    "assistant": "Alright, let's dream big then! How about a tropical island with white sand beaches and crystal clear water? Sound like a nice escape?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 12,
+    "user": "Yeah.",
+    "assistant": "Awesome! Imagine sipping on a fruity drink and feeling the sand between your toes. What kind of activities would you want to do on that island? Maybe snorkeling or just lounging on the beach?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 13,
+    "user": "I guess so.",
+    "assistant": "Sounds like a chill plan! Snorkeling could be a blast to see all the colorful fish and maybe even spot a turtle or two. What\u2019s your favorite way to relax when you\u2019re not dreaming of islands?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 14,
+    "user": "Hmm, hard to say.",
+    "assistant": "No worries! Sometimes just having a good book or binge-watching a show can do the trick, right? What\u2019s the last book you read or show you watched that really grabbed your attention?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 15,
+    "user": "Okay.",
+    "assistant": "Okay, how about we switch it up? Have you tried any new recipes or snacks lately? Cooking can be a fun way to relax and experiment in the kitchen!",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 16,
+    "user": "I'm not sure honestly.",
+    "assistant": "No problem! How about we talk about something completely random then? Like, if you could have any superpower, what would you choose? Flying? Invisibility?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 17,
+    "user": "That's interesting I guess.",
+    "assistant": "Haha, I try! So, if you had to pick, which one? Flying around and seeing the world from above or sneaking around invisible style?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 18,
+    "user": "Yeah maybe sometime.",
+    "assistant": "Got it! How about we save the superpower talk for another time? Wanna chat about anything else going on in your life right now?",
+    "has_question": true,
+    "regression_flags": []
+  }
+]

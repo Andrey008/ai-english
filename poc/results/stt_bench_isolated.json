@@ -1,0 +1,56 @@
+{
+  "medium.en": [
+    {
+      "clip": "samples/real_voice/clip1_normal.wav",
+      "latency_s": 5.495,
+      "text": "Dear advice corner, I have lived in my flat for six months.  I like my home because it is small and comfortable, close to my office and in a quiet environment."
+    },
+    {
+      "clip": "samples/real_voice/clip2_noise.wav",
+      "latency_s": 9.631,
+      "text": "However, things have changed recently.  Two weeks ago, a new neighbor moved into the flat upstairs.  His name is Dan.  He seems nice, but every evening he plays like..."
+    },
+    {
+      "clip": "samples/real_voice/clip3_fast.wav",
+      "latency_s": 5.871,
+      "text": "last night i was trying to sleep when music started again i felt tired and  annoyed because i had an important meeting the next morning i knocked  on dan's door but nobody answered the music was still playing at  12 30 a.m"
+    },
+    {
+      "clip": "samples/real_voice/clip4_technical.wav",
+      "latency_s": 5.901,
+      "text": "Maria, I think you should speak to Dan in person, but you need to choose the right moment.  Don't talk to him late at night when you tired and annoyed because you might say things  that won't help at all."
+    },
+    {
+      "clip": "samples/real_voice/clip5_freeform.wav",
+      "latency_s": 5.651,
+      "text": "You should explain the situation politely and tell him how the noise make you feel.  If you stay calm and friendly, he will probably understand.  You should ignore the problem, because it might..."
+    }
+  ],
+  "large-v3": [
+    {
+      "clip": "samples/real_voice/clip1_normal.wav",
+      "latency_s": 9.85,
+      "text": "Dear advice corner, I have lived in my flat for 6 months.  I like my home because it is small and comfortable, close to my office and in a quiet, quiet environment."
+    },
+    {
+      "clip": "samples/real_voice/clip2_noise.wav",
+      "latency_s": 9.829,
+      "text": "However, things have changed recently. Two weeks ago, a new neighbor moved into the flat upstairs. His name is Dan. He seems nice, but every evening he plays lo-"
+    },
+    {
+      "clip": "samples/real_voice/clip3_fast.wav",
+      "latency_s": 10.725,
+      "text": "Last night I was trying to sleep when music started again. I felt tired and annoyed because I had an important meeting the next morning.  I knocked on Dan's door, but nobody answered. The music was still playing at 12.30 am."
+    },
+    {
+      "clip": "samples/real_voice/clip4_technical.wav",
+      "latency_s": 10.444,
+      "text": "Maria, I think you should speak to Dan in person. But you need to choose the right moment. Don't talk to him late at night, when you tired and annoyed because you might say things that won't help at all."
+    },
+    {
+      "clip": "samples/real_voice/clip5_freeform.wav",
+      "latency_s": 10.311,
+      "text": "You should explain the situation politely and tell him how the noise make you feel.  If you stay calm and friendly, he will probably understand.  You should ignore the problem, because it might come back."
+    }
+  ]
+}

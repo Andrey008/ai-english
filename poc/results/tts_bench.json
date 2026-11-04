@@ -1,0 +1,48 @@
+{
+  "xtts": {
+    "stock_claribel": [
+      {
+        "chunk": 0,
+        "latency_s": 1.963,
+        "text": "That sounds like a really frustrating situation with your neighbor."
+      },
+      {
+        "chunk": 1,
+        "latency_s": 1.353,
+        "text": "Have you thought about what you'd actually say to him?"
+      },
+      {
+        "chunk": 2,
+        "latency_s": 1.411,
+        "text": "I think staying calm is going to matter more than being right."
+      },
+      {
+        "chunk": 3,
+        "latency_s": 1.502,
+        "text": "Let's practice how you might start that conversation."
+      }
+    ],
+    "cloned_from_test_input": [
+      {
+        "chunk": 0,
+        "latency_s": 2.709,
+        "text": "That sounds like a really frustrating situation with your neighbor."
+      },
+      {
+        "chunk": 1,
+        "latency_s": 1.863,
+        "text": "Have you thought about what you'd actually say to him?"
+      },
+      {
+        "chunk": 2,
+        "latency_s": 2.246,
+        "text": "I think staying calm is going to matter more than being right."
+      },
+      {
+        "chunk": 3,
+        "latency_s": 1.874,
+        "text": "Let's practice how you might start that conversation."
+      }
+    ]
+  }
+}

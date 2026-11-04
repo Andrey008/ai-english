@@ -1,0 +1,86 @@
+[
+  {
+    "turn": 1,
+    "user": "Hi, thanks for having me.",
+    "assistant": "Hello! It's great to have you here. How about we start with a little bit about your background? Where did you go to school and what did you study?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 2,
+    "user": "I'm doing well, thank you.",
+    "assistant": "That's good to hear! Let's dive into your educational background. Could you tell me where you studied and what your major was?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 3,
+    "user": "I studied marketing at university and worked at a small agency for two years.",
+    "assistant": "That's a great start! What did you enjoy most about working at that small agency?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 4,
+    "user": "I guess I just want a new challenge.",
+    "assistant": "A new challenge is exciting! Can you tell me more about what kind of challenges you're looking for in this new role?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 5,
+    "user": "I'm not sure, maybe better growth opportunities.",
+    "assistant": "Growth opportunities are definitely important. Have you seen any specific areas in marketing where you'd like to grow or develop your skills?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 6,
+    "user": "I worked on a few social media campaigns.",
+    "assistant": "That's great experience! How did you measure the success of those social media campaigns?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 7,
+    "user": "It was fine, nothing too dramatic.",
+    "assistant": "Okay, fair enough. Can you share a time when you had to come up with a creative solution for a campaign?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 8,
+    "user": "I'd say I'm pretty organized.",
+    "assistant": "Being organized is a valuable trait! Can you give an example of how your organizational skills helped you in a previous project or role?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 9,
+    "user": "Hmm, hard to think of one right now.",
+    "assistant": "No problem! Let's move on. What do you think sets you apart from other candidates applying for this marketing role?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 10,
+    "user": "I think I handled it okay.",
+    "assistant": "Great! Can you tell me more about a specific skill or experience you have that would be particularly useful in this marketing position?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 11,
+    "user": "Sure, sounds good.",
+    "assistant": "Perfect! How about we wrap up with this: What excites you the most about the opportunity to join our team?",
+    "has_question": true,
+    "regression_flags": []
+  },
+  {
+    "turn": 12,
+    "user": "No, I don't have any questions right now.",
+    "assistant": "That's totally fine! It's always good to have questions, but I appreciate your honesty. If you think of any later, feel free to reach out. Is there anything you'd like to highlight about your passion for marketing or why you're a great fit for this role?",
+    "has_question": true,
+    "regression_flags": []
+  }
+]

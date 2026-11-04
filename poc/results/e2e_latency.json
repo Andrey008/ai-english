@@ -1,0 +1,112 @@
+[
+  {
+    "clip": "samples/real_voice/clip1_normal.wav",
+    "transcript": "Dear advice corner, I have lived in my flat for six months. I like my home because it is small and comfortable, close to my office and in a quiet",
+    "first_sentence": "It sounds like you've found a really nice place to live!",
+    "full_reply": "It sounds like you've found a really nice place to live! What made you decide to stay there for six months? Are there any particular features or aspects of your flat that you especially enjoy?",
+    "stt_s": 3.693,
+    "llm_ttfb_s": 1.209,
+    "tts_s": 2.874,
+    "playback_launch_s": 0.0,
+    "ttfa_s": 7.776
+  },
+  {
+    "clip": "samples/real_voice/clip2_noise.wav",
+    "transcript": "However, things have changed recently. Two weeks ago, a new neighbor moved into the flat upstairs. His name is Dan. He seems nice, but every evening, he plays",
+    "first_sentence": "That sounds interesting!",
+    "full_reply": "That sounds interesting! What kind of noise does Dan make in the evenings? It could be fun if it's something like playing music or an instrument.",
+    "stt_s": 2.069,
+    "llm_ttfb_s": 1.029,
+    "tts_s": 2.801,
+    "playback_launch_s": 0.0,
+    "ttfa_s": 5.899
+  },
+  {
+    "clip": "samples/real_voice/clip3_fast.wav",
+    "transcript": "Last night I was trying to sleep when music started again. I felt tired and annoyed because I had an important meeting the next morning. I knocked on Dan's door, but nobody answered. The music was still playing at 12.30 am.",
+    "first_sentence": "That sounds really frustrating!",
+    "full_reply": "That sounds really frustrating! You must have been so tired. Did you try calling Dan or leaving a message?",
+    "stt_s": 2.239,
+    "llm_ttfb_s": 1.091,
+    "tts_s": 2.063,
+    "playback_launch_s": 0.0,
+    "ttfa_s": 5.393
+  },
+  {
+    "clip": "samples/real_voice/clip4_technical.wav",
+    "transcript": "Maria, I think you should speak to Dan in person, but you need to choose the right moment. Don't talk to him late at night when you're tired and annoyed because you might say things that won't help at all.",
+    "first_sentence": "That's a good point.",
+    "full_reply": "That's a good point. It's important to talk when both of you are calm and can really listen to each other. Maybe after work or over lunch could be a good time?",
+    "stt_s": 2.053,
+    "llm_ttfb_s": 1.198,
+    "tts_s": 3.36,
+    "playback_launch_s": 0.0,
+    "ttfa_s": 6.61
+  },
+  {
+    "clip": "samples/real_voice/clip5_freeform.wav",
+    "transcript": "You should explain the situation politely and tell him how the noise make you feel. If you stay calm and friendly, he will probably understand. You should ignore the problem, because it might",
+    "first_sentence": "It sounds like you're trying to address a noisy neighbor.",
+    "full_reply": "It sounds like you're trying to address a noisy neighbor. Communicating calmly and clearly about how the noise affects you can really help. Ignoring the problem might not solve it and could lead to more frustration later.",
+    "stt_s": 3.437,
+    "llm_ttfb_s": 1.685,
+    "tts_s": 3.241,
+    "playback_launch_s": 0.0,
+    "ttfa_s": 8.363
+  },
+  {
+    "clip": "samples/real_voice/clip1_normal.wav",
+    "transcript": "Dear advice corner, I have lived in my flat for six months. I like my home because it is small and comfortable, close to my office and in a quiet",
+    "first_sentence": "It sounds like you've found a pretty ideal place to live!",
+    "full_reply": "It sounds like you've found a pretty ideal place to live! What made you decide to reach out for advice? Is there something specific you're considering about your living situation?",
+    "stt_s": 2.081,
+    "llm_ttfb_s": 1.18,
+    "tts_s": 2.661,
+    "playback_launch_s": 0.0,
+    "ttfa_s": 5.921
+  },
+  {
+    "clip": "samples/real_voice/clip2_noise.wav",
+    "transcript": "However, things have changed recently. Two weeks ago, a new neighbor moved into the flat upstairs. His name is Dan. He seems nice, but every evening, he plays",
+    "first_sentence": "Oh, I see!",
+    "full_reply": "Oh, I see! What kind of noise is it? Music or maybe he's having late conversations?",
+    "stt_s": 3.041,
+    "llm_ttfb_s": 0.515,
+    "tts_s": 2.004,
+    "playback_launch_s": 0.0,
+    "ttfa_s": 5.559
+  },
+  {
+    "clip": "samples/real_voice/clip3_fast.wav",
+    "transcript": "Last night I was trying to sleep when music started again. I felt tired and annoyed because I had an important meeting the next morning. I knocked on Dan's door, but nobody answered. The music was still playing at 12.30 am.",
+    "first_sentence": "That sounds really frustrating!",
+    "full_reply": "That sounds really frustrating! Did you manage to get any sleep, or were you up all night because of the noise? Maybe you could talk to Dan another time when he's around to discuss the noise issue?",
+    "stt_s": 2.136,
+    "llm_ttfb_s": 0.516,
+    "tts_s": 3.785,
+    "playback_launch_s": 0.0,
+    "ttfa_s": 6.438
+  },
+  {
+    "clip": "samples/real_voice/clip4_technical.wav",
+    "transcript": "Maria, I think you should speak to Dan in person, but you need to choose the right moment. Don't talk to him late at night when you're tired and annoyed because you might say things that won't help at all.",
+    "first_sentence": "That's a good point.",
+    "full_reply": "That's a good point. It's important to talk when both of you are calm and can really listen to each other. Maybe after work or over lunch could be a good time?",
+    "stt_s": 2.435,
+    "llm_ttfb_s": 0.599,
+    "tts_s": 3.258,
+    "playback_launch_s": 0.0,
+    "ttfa_s": 6.292
+  },
+  {
+    "clip": "samples/real_voice/clip5_freeform.wav",
+    "transcript": "You should explain the situation politely and tell him how the noise make you feel. If you stay calm and friendly, he will probably understand. You should ignore the problem, because it might",
+    "first_sentence": "It sounds like you're trying to address a noisy neighbor.",
+    "full_reply": "It sounds like you're trying to address a noisy neighbor. Communicating calmly and clearly about how the noise affects you is a good approach. Ignoring it might not solve the problem and could lead to more frustration later.",
+    "stt_s": 2.354,
+    "llm_ttfb_s": 1.107,
+    "tts_s": 3.433,
+    "playback_launch_s": 0.0,
+    "ttfa_s": 6.895
+  }
+]

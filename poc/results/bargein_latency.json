@@ -1,0 +1,52 @@
+[
+  {
+    "cycle": 0,
+    "prompt": "Tell me a detailed story about a road trip you imagine taking.",
+    "interrupted": true,
+    "sentences_played_before_stop": 0,
+    "full_reply_so_far": "",
+    "stop_latency_s": 0.099,
+    "time_to_first_audio_s": null,
+    "cycle_wall_time_s": 1.07
+  },
+  {
+    "cycle": 1,
+    "prompt": "Describe your ideal weekend in a lot of detail.",
+    "interrupted": true,
+    "sentences_played_before_stop": 0,
+    "full_reply_so_far": "My ideal weekend would start with sleeping in, maybe",
+    "stop_latency_s": 0.084,
+    "time_to_first_audio_s": null,
+    "cycle_wall_time_s": 2.176
+  },
+  {
+    "cycle": 2,
+    "prompt": "Explain, in detail, how you'd plan a surprise birthday party.",
+    "interrupted": true,
+    "sentences_played_before_stop": 1,
+    "full_reply_so_far": "Planning a surprise birthday party starts with choosing a date and time that the birthday person won\u2019t suspect. For",
+    "stop_latency_s": 0.023,
+    "time_to_first_audio_s": 6.817,
+    "cycle_wall_time_s": 10.322
+  },
+  {
+    "cycle": 3,
+    "prompt": "Tell me a long story about learning a new hobby.",
+    "interrupted": true,
+    "sentences_played_before_stop": 1,
+    "full_reply_so_far": "Sure, I can share a story about learning a new hobby. Imagine it's a sunny afternoon, and you've decided to take up painting as your new hobby. You",
+    "stop_latency_s": 0.413,
+    "time_to_first_audio_s": 4.692,
+    "cycle_wall_time_s": 11.379
+  },
+  {
+    "cycle": 4,
+    "prompt": "Describe in detail what your dream house would look like.",
+    "interrupted": true,
+    "sentences_played_before_stop": 1,
+    "full_reply_so_far": "My dream house would be nestled in a quiet, lush green setting, surrounded by trees that provide a natural shield from the outside world, ensuring privacy and tranquility. The",
+    "stop_latency_s": 0.021,
+    "time_to_first_audio_s": 8.204,
+    "cycle_wall_time_s": 10.498
+  }
+]

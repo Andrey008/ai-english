@@ -1,0 +1,82 @@
+[
+  {
+    "cycle": 0,
+    "prompt": "Tell me a detailed story about a road trip you imagine taking.",
+    "interrupted": true,
+    "sentences_played_before_stop": 1,
+    "full_reply_so_far": "Imagine embarking on a road trip along the scenic Pacific Coast Highway, starting in San Francisco. As",
+    "stop_latency_s": 0.024,
+    "time_to_first_audio_s": 5.468,
+    "cycle_wall_time_s": 6.847
+  },
+  {
+    "cycle": 1,
+    "prompt": "Describe your ideal weekend in a lot of detail.",
+    "interrupted": true,
+    "sentences_played_before_stop": 1,
+    "full_reply_so_far": "My ideal weekend would start with sleeping in a bit and waking up to a delicious, leisurely brunch cooked by myself or maybe with friends. After",
+    "stop_latency_s": 0.016,
+    "time_to_first_audio_s": 7.885,
+    "cycle_wall_time_s": 9.138
+  },
+  {
+    "cycle": 2,
+    "prompt": "Explain, in detail, how you'd plan a surprise birthday party.",
+    "interrupted": true,
+    "sentences_played_before_stop": 1,
+    "full_reply_so_far": "Planning a surprise birthday party involves a few key steps to ensure it's a memorable and enjoyable experience. First",
+    "stop_latency_s": 0.03,
+    "time_to_first_audio_s": 4.68,
+    "cycle_wall_time_s": 5.394
+  },
+  {
+    "cycle": 3,
+    "prompt": "Tell me a long story about learning a new hobby.",
+    "interrupted": true,
+    "sentences_played_before_stop": 1,
+    "full_reply_so_far": "Sure, I'd love to share a story about learning a new hobby. Let",
+    "stop_latency_s": 0.022,
+    "time_to_first_audio_s": 5.32,
+    "cycle_wall_time_s": 6.313
+  },
+  {
+    "cycle": 4,
+    "prompt": "Describe in detail what your dream house would look like.",
+    "interrupted": true,
+    "sentences_played_before_stop": 1,
+    "full_reply_so_far": "My dream house would have large windows that let in plenty of natural light, creating a bright and welcoming atmosphere. It",
+    "stop_latency_s": 0.026,
+    "time_to_first_audio_s": 6.423,
+    "cycle_wall_time_s": 9.333
+  },
+  {
+    "cycle": 5,
+    "prompt": "Tell me a detailed story about exploring a new city for the first time.",
+    "interrupted": true,
+    "sentences_played_before_stop": 1,
+    "full_reply_so_far": "Sure, I'd love to share that with you! Imagine",
+    "stop_latency_s": 0.02,
+    "time_to_first_audio_s": 3.699,
+    "cycle_wall_time_s": 6.249
+  },
+  {
+    "cycle": 6,
+    "prompt": "Describe, in detail, your favorite meal and how you'd cook it.",
+    "interrupted": true,
+    "sentences_played_before_stop": 1,
+    "full_reply_so_far": "My favorite meal is definitely a classic homemade pizza. To",
+    "stop_latency_s": 0.024,
+    "time_to_first_audio_s": 3.985,
+    "cycle_wall_time_s": 5.381
+  },
+  {
+    "cycle": 7,
+    "prompt": "Tell me a long story about a memorable holiday you imagine having.",
+    "interrupted": true,
+    "sentences_played_before_stop": 1,
+    "full_reply_so_far": "Imagine waking up to the sound of waves crashing on a pristine beach in the Maldives, where your holiday villa sits just steps away from the shore. You",
+    "stop_latency_s": 0.005,
+    "time_to_first_audio_s": 9.107,
+    "cycle_wall_time_s": 10.182
+  }
+]
