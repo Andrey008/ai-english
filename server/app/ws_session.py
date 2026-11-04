@@ -1,0 +1,515 @@
+"""WebSocket streaming session endpoint (STORY-02-05).
+
+Wires VAD -> STT -> conversation engine -> TTS end-to-end for a single
+active session (no multi-tenancy, ADR-0001). See the module docstring
+sections below for the wire protocol.
+
+## Protocol (proto_version 1)
+
+Binary frames carry raw 16-bit PCM mono 16kHz audio, both directions.
+JSON text frames carry everything else, always with a `"type"` field.
+
+Client -> Server:
+- `{"type": "session_start", "proto_version": 1, "session_id": "<optional>", "character_id": "<optional>", "scenario_id": "<optional>"}`
+  First message on the connection. Omit `session_id` for a new session;
+  pass a previous one to attempt reconnect (honored only within the
+  registry's grace window — see `session_registry.py`). `character_id`
+  selects a preset from `presets.py` (`STORY-02-07`) — its
+  `role_description`/`tts_voice_id` drive the session (system prompt is
+  composed via `persona.render_system_prompt`, `ADR-0008`); omitted or
+  unknown falls back to the default persona/voice. `scenario_id`
+  (`STORY-03-04`) selects a structured scenario from `scenarios.py`
+  (`STORY-03-03`) — its prompt addendum is layered on top of the
+  persona base, and the character proactively speaks its
+  `opening_line_hint` before the session starts listening. Omitted or
+  unknown falls back to freeform (today's behavior, unchanged). Both
+  `character_id`/`scenario_id` are ignored on reconnect (the original
+  session's character/scenario is already bound; no opening line replay).
+- `{"type": "session_end"}` — clean end, releases the session for good.
+- (binary) mic audio chunks, any size, PCM16/16kHz/mono.
+
+Server -> Client:
+- `{"type": "session_ready", "proto_version": 1, "session_id": "...", "reconnected": bool}`
+- `{"type": "session_state", "state": "listening" | "processing" | "speaking"}`
+- `{"type": "transcript_final", "text": "..."}`
+- `{"type": "response_text_chunk", "text": "...", "sentence_index": N}`
+- `{"type": "audio_chunk_boundary", "phase": "start" | "end", "sentence_index": N}`
+  (binary TTS PCM16 chunks stream between a "start" and its "end" — a
+  scenario's opening line uses this same shape, sent right after
+  `session_ready`/before the first `listening` state, so the client
+  doesn't need a separate code path for it)
+- `{"type": "error", "message": "..."}` — non-fatal unless followed by close.
+- `{"type": "session_ended"}`
+
+Known gap (not this story's job): a server restart mid-session loses
+in-memory state entirely — no crash-recovery, just no worse than not
+existing. Full reconnect UX is `EPIC-08`.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+import time
+
+from fastapi import WebSocket, WebSocketDisconnect
+
+from app.audio_utils import pcm16_to_wav_bytes
+from app.config import resolve_repo_path
+from app.conversation_engine import SENTENCE_END, ConversationEngineError
+from app.persona import DEFAULT_SYSTEM_PROMPT, render_scenario_addendum, render_system_prompt
+from app.session_registry import SessionConflictError
+from app.stt_service import STTServiceError
+from app.tts_service import TTSServiceError, speakable_text
+from app.turn_detection import looks_incomplete
+from app.vad_service import TurnSegmenter
+
+logger = logging.getLogger("ai_english.ws_session")
+
+PROTO_VERSION = 1
+MIN_UTTERANCE_BYTES = 9600  # ~0.3s at 16kHz/16-bit mono — filters VAD blips
+INBOUND_GAP_LOG_S = 2.0
+PCM_BYTES_PER_SECOND = 32000  # 16kHz * 16-bit mono
+# Network transit + client AudioTrack buffering on top of the pure audio
+# duration, before the phone is actually silent again.
+PLAYBACK_TAIL_MARGIN_S = 0.4
+# whisper.cpp's non-speech markers ("[BLANK_AUDIO]", "(music)", ...).
+NON_SPEECH_MARKER = re.compile(r"\[[^\]]*\]|\([^)]*\)")
+
+
+DEBUG_AUDIO_DIR = resolve_repo_path("server/data/debug_audio")
+
+
+def _save_debug_audio(session_id: str, pcm: bytes) -> str | None:
+    try:
+        DEBUG_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+        path = DEBUG_AUDIO_DIR / f"{session_id[:8]}_{time.strftime('%H%M%S')}_{len(pcm) // 32}ms.wav"
+        path.write_bytes(pcm16_to_wav_bytes(pcm))
+        return str(path)
+    except OSError:
+        return None
+
+
+class PlaybackClock:
+    """Estimates when the client finishes *playing* the TTS audio sent so
+    far. TTS synthesizes faster than real time, so the server is done
+    sending well before the phone is done speaking — reopening the mic
+    at send-end let the phone's own speaker output (and the user
+    answering over it) leak into the next turn (STORY-05-11)."""
+
+    def __init__(self) -> None:
+        self._until = 0.0
+
+    def add(self, pcm_bytes: int) -> None:
+        self._until = max(self._until, time.monotonic()) + pcm_bytes / PCM_BYTES_PER_SECOND
+
+    async def wait_drained(self) -> None:
+        remaining = self._until + PLAYBACK_TAIL_MARGIN_S - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+
+
+async def handle_ws_session(websocket: WebSocket) -> None:
+    app = websocket.app
+    registry = app.state.session_registry
+    conversation_engine = app.state.conversation_engine
+    stt_service = app.state.stt_service
+    tts_service = app.state.tts_service
+    db = app.state.db
+
+    await websocket.accept()
+
+    # The client's mic keeps streaming across a reconnect, and OkHttp
+    # queues frames sent before the handshake completes — so stale audio
+    # can arrive ahead of `session_start`. Skip binary frames until it does.
+    while True:
+        message = await websocket.receive()
+        if message["type"] == "websocket.disconnect":
+            return
+        if message.get("text") is not None:
+            break
+    first = json.loads(message["text"])
+    if first.get("type") != "session_start":
+        await websocket.send_json({"type": "error", "message": "expected session_start as first message"})
+        await websocket.close(code=4400)
+        return
+
+    requested_session_id = first.get("session_id")
+    try:
+        claim = registry.try_claim(requested_session_id, owner=websocket)
+    except SessionConflictError as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close(code=4409)
+        return
+
+    session_id = claim.session_id
+    if claim.superseded_owner is not None:
+        logger.info("ws_session_taken_over", extra={"session_id": session_id})
+        asyncio.create_task(_close_quietly(claim.superseded_owner))
+    if claim.evicted_session_id:
+        conversation_engine.end_session(claim.evicted_session_id)
+        logger.info("ws_session_evicted_stale", extra={"session_id": claim.evicted_session_id})
+
+    preset = None
+    scenario = None
+    if claim.is_reconnect:
+        # Restore which character this session was bound to, so TTS
+        # voice selection stays consistent across a reconnect. Scenario
+        # opening lines don't replay on reconnect (already spoken/in
+        # history), so scenario isn't restored here.
+        session_row = await db.get_session(session_id)
+        if session_row and session_row.get("character_id"):
+            preset = app.state.preset_store.get(session_row["character_id"])
+    else:
+        character_id = first.get("character_id")
+        if character_id:
+            preset = app.state.preset_store.get(character_id)
+            if preset is None:
+                logger.warning("ws_unknown_character_id", extra={"character_id": character_id})
+
+        scenario_id = first.get("scenario_id")
+        if scenario_id:
+            scenario = app.state.scenario_store.get(scenario_id)
+            if scenario is None:
+                logger.warning("ws_unknown_scenario_id", extra={"scenario_id": scenario_id})
+
+        system_prompt = None
+        if preset is not None:
+            system_prompt = preset.system_prompt_override or render_system_prompt(
+                preset.name, preset.role_description, preset.correction_style
+            )
+        if scenario is not None:
+            base = system_prompt or DEFAULT_SYSTEM_PROMPT
+            system_prompt = (
+                f"{base}\n\n"
+                f"{render_scenario_addendum(scenario.title, scenario.character_role_prompt_addendum, scenario.goal)}"
+            )
+        if preset is not None:
+            memory = await db.get_character_memory(preset.id)
+            if memory and memory.get("rolling_summary"):
+                system_prompt = (
+                    f"{system_prompt}\n\nMEMORY (what you remember about this user from "
+                    f"past conversations together):\n{memory['rolling_summary']}"
+                )
+        conversation_engine.start_session(
+            session_id,
+            system_prompt=system_prompt,
+            opening_message=scenario.opening_line_hint if scenario else None,
+        )
+        await db.create_session(
+            session_id,
+            character_id=preset.id if preset else None,
+            scenario_id=scenario.id if scenario else None,
+        )
+
+    logger.info(
+        "ws_session_started",
+        extra={"session_id": session_id, "reconnected": claim.is_reconnect},
+    )
+    await websocket.send_json(
+        {
+            "type": "session_ready",
+            "proto_version": PROTO_VERSION,
+            "session_id": session_id,
+            "reconnected": claim.is_reconnect,
+        }
+    )
+
+    segmenter = TurnSegmenter(app.state.config)
+    voice_id = preset.tts_voice_id if preset else None
+    clean_end = False
+    turn_task: asyncio.Task | None = None
+    clock = PlaybackClock()
+
+    # Smart turn (`turn_detection.py`): a VAD pause doesn't end the turn
+    # by itself — the utterance is transcribed first, and if it looks
+    # unfinished the turn is held open for `hold_s` so the user can carry
+    # on. Speech resuming during the hold (or during that STT call)
+    # cancels the decision; the next pause re-decides on all the audio
+    # so far, concatenated.
+    hold_s = app.state.config["vad"].get("incomplete_hold_ms", 2000) / 1000
+    pending_audio = bytearray()
+    decide_task: asyncio.Task | None = None
+
+    async def decide_turn() -> None:
+        try:
+            await _decide_turn()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("ws_turn_decide_error", extra={"session_id": session_id})
+
+    async def _decide_turn() -> None:
+        nonlocal turn_task
+        audio = bytes(pending_audio)
+        try:
+            transcript = await stt_service.transcribe(pcm16_to_wav_bytes(audio))
+        except STTServiceError as exc:
+            logger.warning("ws_turn_stt_failed", extra={"session_id": session_id, "error": str(exc)})
+            await websocket.send_json({"type": "error", "message": f"transcription failed: {exc}"})
+            pending_audio.clear()
+            return
+        transcript = NON_SPEECH_MARKER.sub("", transcript).strip()
+        if not transcript:
+            # VAD heard "speech" that STT found empty. Kept on disk to tell
+            # silence/echo/corrupted audio apart (STORY-05-11: after a
+            # reconnect, 8 utterances in a row came back empty).
+            path = _save_debug_audio(session_id, audio)
+            logger.info("ws_turn_non_speech_dropped", extra={"session_id": session_id, "audio_path": path})
+            pending_audio.clear()
+            return
+        held = looks_incomplete(transcript)
+        if held:
+            logger.info("ws_turn_held_incomplete", extra={"session_id": session_id, "transcript": transcript})
+            await asyncio.sleep(hold_s)
+        pending_audio.clear()
+        turn_task = asyncio.create_task(run_turn(audio, transcript, held))
+
+    async def run_turn(utterance: bytes, transcript: str, held: bool) -> None:
+        try:
+            await _handle_turn(
+                websocket, session_id, utterance,
+                conversation_engine, stt_service, tts_service, db,
+                voice_id, clock, transcript=transcript, held=held,
+            )
+            # The turn task stays alive (so mic audio keeps being
+            # dropped) until the phone has actually finished speaking.
+            await clock.wait_drained()
+            await websocket.send_json({"type": "session_state", "state": "listening"})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The receive loop notices a dead socket on its own; this just
+            # keeps a failed turn from vanishing silently inside the task.
+            logger.exception("ws_turn_error", extra={"session_id": session_id})
+        finally:
+            # Audio that arrived mid-turn was dropped (see below), so the
+            # VAD must not carry a half-seen utterance into the next turn.
+            segmenter.reset()
+
+    try:
+        if scenario is not None:
+            await websocket.send_json({"type": "session_state", "state": "speaking"})
+            await _speak_text(websocket, tts_service, session_id, scenario.opening_line_hint, voice_id, clock)
+            await db.add_turn(session_id, "assistant", scenario.opening_line_hint)
+            await clock.wait_drained()
+            segmenter.reset()
+        await websocket.send_json({"type": "session_state", "state": "listening"})
+        # The client mic streams continuously, so a gap in inbound frames
+        # means the network path stalled — logged to pin down the
+        # unexplained client-side reconnects (STORY-05-11).
+        last_frame_at = time.monotonic()
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                logger.info(
+                    "ws_client_disconnect",
+                    extra={
+                        "session_id": session_id,
+                        "code": message.get("code"),
+                        "since_last_frame_s": round(time.monotonic() - last_frame_at, 1),
+                    },
+                )
+                break
+
+            if (data := message.get("bytes")) is not None:
+                now = time.monotonic()
+                if now - last_frame_at > INBOUND_GAP_LOG_S:
+                    logger.warning(
+                        "ws_inbound_gap",
+                        extra={"session_id": session_id, "gap_s": round(now - last_frame_at, 1)},
+                    )
+                last_frame_at = now
+                # A turn runs as its own task so this loop keeps reading
+                # the socket throughout it — otherwise the inbound queue
+                # fills with mic audio, websockets stops reading frames,
+                # client pings go unanswered and a long reply drops the
+                # connection (STORY-05-11). Mic audio during a turn is
+                # discarded: turn-taking is non-interruptible (no barge-in,
+                # EPIC-06), and queuing it would replay speaker echo or
+                # mid-reply speech as a phantom next turn.
+                if turn_task is not None and not turn_task.done():
+                    continue
+                for event in segmenter.feed(data):
+                    if event["type"] == "speech_start":
+                        if decide_task is not None and not decide_task.done():
+                            decide_task.cancel()  # user carried on — not a turn end
+                    elif event["type"] == "speech_end" and len(event["audio"]) >= MIN_UTTERANCE_BYTES:
+                        pending_audio.extend(event["audio"])
+                        decide_task = asyncio.create_task(decide_turn())
+                continue
+
+            if (text := message.get("text")) is not None:
+                payload = json.loads(text)
+                if payload.get("type") == "session_end":
+                    clean_end = True
+                    break
+
+    except WebSocketDisconnect:
+        logger.info("ws_session_disconnected", extra={"session_id": session_id})
+    except Exception:
+        logger.exception("ws_session_error", extra={"session_id": session_id})
+        try:
+            await websocket.send_json({"type": "error", "message": "internal server error"})
+        except Exception:
+            pass
+    finally:
+        if decide_task is not None and not decide_task.done():
+            decide_task.cancel()
+        if turn_task is not None and not turn_task.done():
+            turn_task.cancel()
+            try:
+                await turn_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if clean_end:
+            registry.end(session_id)
+            conversation_engine.end_session(session_id)
+            await db.end_session(session_id)
+            if preset is not None:
+                # Fire-and-forget: fully off the session-teardown path, let
+                # alone the live conversation's — the client doesn't wait
+                # on this to get its session_ended ack.
+                asyncio.create_task(
+                    app.state.character_memory_service.update_after_session(
+                        session_id, preset.id, preset.name
+                    )
+                )
+            try:
+                await websocket.send_json({"type": "session_ended"})
+            except Exception:
+                pass
+            logger.info("ws_session_ended_clean", extra={"session_id": session_id})
+        else:
+            registry.release(session_id, claim.generation)
+            logger.info("ws_session_released_for_reconnect", extra={"session_id": session_id})
+
+
+async def _close_quietly(websocket) -> None:
+    """Close a superseded (likely half-open) socket without letting a dead
+    peer stall the caller."""
+    try:
+        await asyncio.wait_for(websocket.close(code=4001), timeout=5)
+    except Exception:
+        pass
+
+
+async def _speak_sentence(
+    websocket, tts_service, session_id, text, sentence_index, voice_id, clock: PlaybackClock | None = None
+) -> float | None:
+    """Returns the monotonic time the first audio chunk was sent (None if none was)."""
+    await websocket.send_json(
+        {"type": "response_text_chunk", "text": text, "sentence_index": sentence_index}
+    )
+    await websocket.send_json(
+        {"type": "audio_chunk_boundary", "phase": "start", "sentence_index": sentence_index}
+    )
+    first_audio_at = None
+    try:
+        async for pcm_chunk in tts_service.synthesize_stream(text, voice_id=voice_id):
+            await websocket.send_bytes(pcm_chunk)
+            if clock is not None:
+                clock.add(len(pcm_chunk))
+            if first_audio_at is None:
+                first_audio_at = time.monotonic()
+    except TTSServiceError as exc:
+        logger.warning("ws_turn_tts_failed", extra={"session_id": session_id, "error": str(exc)})
+        await websocket.send_json({"type": "error", "message": f"synthesis failed: {exc}"})
+    await websocket.send_json(
+        {"type": "audio_chunk_boundary", "phase": "end", "sentence_index": sentence_index}
+    )
+    return first_audio_at
+
+
+async def _speak_text(websocket, tts_service, session_id, text, voice_id, clock=None) -> None:
+    """Split already-known static text (a scenario's opening line, not a
+    live LLM stream) into the same sentence-chunked TTS shape as a normal
+    reply, so the client needs no separate code path for it."""
+    sentences = []
+    buf = text
+    match = SENTENCE_END.search(buf)
+    while match:
+        sentences.append(buf[: match.end()].strip())
+        buf = buf[match.end() :]
+        match = SENTENCE_END.search(buf)
+    if buf.strip():
+        sentences.append(buf.strip())
+
+    for i, sentence in enumerate(sentences):
+        if sentence:
+            await _speak_sentence(websocket, tts_service, session_id, sentence, i, voice_id, clock)
+
+
+async def _handle_turn(
+    websocket, session_id, utterance_pcm, conversation_engine, stt_service, tts_service, db,
+    voice_id=None, clock: PlaybackClock | None = None,
+    transcript: str | None = None, held: bool = False,
+) -> None:
+    """`transcript` is passed in when the smart-turn decision already ran
+    STT on this utterance; timings are then relative to the decision,
+    not to VAD speech_end."""
+    t0 = time.monotonic()
+    await websocket.send_json({"type": "session_state", "state": "processing"})
+
+    if transcript is None:
+        try:
+            transcript = await stt_service.transcribe(pcm16_to_wav_bytes(utterance_pcm))
+        except STTServiceError as exc:
+            logger.warning("ws_turn_stt_failed", extra={"session_id": session_id, "error": str(exc)})
+            await websocket.send_json({"type": "error", "message": f"transcription failed: {exc}"})
+            return
+        transcript = NON_SPEECH_MARKER.sub("", transcript).strip()
+    if not transcript:
+        logger.info("ws_turn_non_speech_dropped", extra={"session_id": session_id})
+        return
+
+    await websocket.send_json({"type": "transcript_final", "text": transcript})
+    await db.add_turn(session_id, "user", transcript)
+    await websocket.send_json({"type": "session_state", "state": "speaking"})
+    t_stt = time.monotonic()
+    t_first_sentence = t_first_audio = None
+
+    try:
+        sentence_index = 0
+        full_reply = ""
+        async for event in conversation_engine.generate_reply(session_id, transcript):
+            if event["type"] in ("done", "cancelled"):
+                full_reply = event.get("full_text", "")
+                continue
+            if event["type"] != "sentence":
+                continue
+            spoken = speakable_text(event["text"])
+            if not spoken:
+                continue  # e.g. a sentence that was only emoji
+            if t_first_sentence is None:
+                t_first_sentence = time.monotonic()
+            sent_at = await _speak_sentence(
+                websocket, tts_service, session_id, spoken, sentence_index, voice_id, clock
+            )
+            if t_first_audio is None:
+                t_first_audio = sent_at
+            sentence_index += 1
+        if full_reply.strip():
+            await db.add_turn(session_id, "assistant", full_reply)
+        # Per-turn latency breakdown, all relative to VAD speech_end
+        # (excludes the VAD silence cutoff itself and network transit).
+        since = lambda t: round(t - t0, 3) if t is not None else None  # noqa: E731
+        logger.info(
+            "ws_turn_timing",
+            extra={
+                "session_id": session_id,
+                "utterance_s": round(len(utterance_pcm) / 32000, 2),
+                "held_incomplete": held,
+                "stt_s": since(t_stt),
+                "llm_first_sentence_s": since(t_first_sentence),
+                "first_audio_s": since(t_first_audio),
+                "turn_total_s": since(time.monotonic()),
+                "sentences": sentence_index,
+                "user_words": len(transcript.split()),
+                "reply_words": len(full_reply.split()),
+            },
+        )
+    except ConversationEngineError as exc:
+        logger.warning("ws_turn_llm_failed", extra={"session_id": session_id, "error": str(exc)})
+        await websocket.send_json({"type": "error", "message": f"generation failed: {exc}"})

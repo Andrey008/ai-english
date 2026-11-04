@@ -1,0 +1,67 @@
+# Default component config for the AI English Voice Companion server.
+# Values here reflect poc/results/FINDINGS.md (Phase 1 PoC decisions),
+# not the original TZ guesses. Override any value via env vars prefixed
+# AI_ENGLISH__ (double underscore = nesting), e.g.:
+#   AI_ENGLISH__LLM__MODEL=gemma2:27b
+# or point at a whole different file with AI_ENGLISH_CONFIG_FILE=/path/to.yaml
+
+stt:
+  engine: whisper_cpp        # whisper.cpp + Core ML
+  model: medium.en
+  mode: streaming            # 540ms median (poc/results/stt_engine_spike.md)
+  # Persistent whisper-server (ADR-0007): binary/model paths are relative
+  # to the repo root. Reuses the PoC's whisper.cpp build rather than
+  # re-vendoring a multi-GB C++ project under /server — see ADR-0007.
+  whisper_server_bin: poc/whisper.cpp/build/bin/whisper-server
+  model_path: poc/whisper.cpp/models/ggml-medium.en.bin
+  host: 127.0.0.1
+  port: 8781
+  startup_timeout_s: 60
+
+llm:
+  provider: ollama
+  # Primary conversational model — ADR-0012 (was qwen2.5:32b, no longer
+  # pulled; qwen3.8:27b measured too slow for live voice at 3.9 tok/s).
+  model: gemma2:27b
+  learning_layer_model: gemma2:27b   # reserved, non-critical-path use only
+  # In-session context compaction (app/conversation_engine.py): once the
+  # history estimate passes trigger_tokens, older turns are summarized in
+  # the background and the last keep_recent_messages stay verbatim.
+  # Sized for gemma2:27b's 8K window (persona prompt alone is ~520);
+  # 0 disables.
+  compaction:
+    trigger_tokens: 5000
+    keep_recent_messages: 6
+
+tts:
+  engine: piper               # default — ~0.6s/chunk
+  voice: en_US-lessac-medium
+  optional_engine: xtts_v2    # non-default, character-voice variety only
+  # Reuses the PoC's already-downloaded Piper voice models (.onnx +
+  # .onnx.json), same rationale as stt.whisper_server_bin — see ADR-0007.
+  voices_dir: poc/voices
+
+vad:
+  engine: silero
+  # Pause that triggers an end-of-turn *check* (not the turn end itself):
+  # the utterance is transcribed, and if it looks unfinished
+  # (app/turn_detection.py) the turn is held open another
+  # incomplete_hold_ms for the user to continue. 600 alone cut learners
+  # off mid-thought (STORY-05-11 real-device test).
+  silence_cutoff_ms: 1000
+  incomplete_hold_ms: 2000
+
+persistence:
+  # Relative to repo root, same convention as stt/tts paths above.
+  db_path: server/data/ai_english.db
+
+presets:
+  dir: server/data/characters
+
+scenarios:
+  dir: server/data/scenarios
+
+latency_budget:
+  # ADR-0006 — working target, quiet/normal conditions. Not a hard
+  # runtime enforcement, just the number STORY-02-09 validates against.
+  ttfa_target_s: 3.0
