@@ -36,3 +36,22 @@ local.properties
 /models/
 /data/
 /logs/
+# Server runtime data: the SQLite DB holds real conversations; debug_audio
+# holds raw mic captures. Character presets / scenarios next to them are
+# seed content and ARE committed.
+/server/data/*.db
+/server/data/*.db-*
+/server/data/debug_audio/
+
+# Vendored external tools built for PoC spikes (not our code)
+/poc/whisper.cpp/
+
+# PoC binaries: downloadable Piper voice models (~60MB each), and audio
+# samples, which include recordings of the developer's real and cloned
+# voice — personal data, never for a public repo.
+/poc/voices/*.onnx
+/poc/**/*.wav
+/poc/**/*.aiff
+
+# Editor
+.vscode/
