@@ -1,0 +1,184 @@
+package com.aienglish.companion.ui.screens
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import com.aienglish.companion.BuildConfig
+import com.aienglish.companion.R
+import com.aienglish.companion.ui.LocalAppContainer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
+
+private fun testConnectionClient(): OkHttpClient = OkHttpClient.Builder()
+    .connectTimeout(4, TimeUnit.SECONDS)
+    .readTimeout(4, TimeUnit.SECONDS)
+    .build()
+
+/** Result of hitting `/healthz` against whatever host/port is currently
+ * typed in the form — deliberately not [com.aienglish.companion.data.api.ApiClient],
+ * which always reads the *saved* config; this needs to test unsaved values
+ * before the user commits to them. */
+private sealed class ConnectionTestResult {
+    object Reachable : ConnectionTestResult()
+    data class Unreachable(val reason: String) : ConnectionTestResult()
+}
+
+private suspend fun testConnection(host: String, port: Int): ConnectionTestResult = withContext(Dispatchers.IO) {
+    try {
+        val request = Request.Builder().url("http://$host:$port/healthz").build()
+        testConnectionClient().newCall(request).execute().use { response ->
+            if (response.isSuccessful) {
+                ConnectionTestResult.Reachable
+            } else {
+                ConnectionTestResult.Unreachable("Server responded with HTTP ${response.code}")
+            }
+        }
+    } catch (e: Exception) {
+        ConnectionTestResult.Unreachable(e.message ?: e.javaClass.simpleName)
+    }
+}
+
+/** Editable server connection config (supersedes STORY-05-01's first-run-only
+ * entry) plus app version info. Per-character memory reset lives on the
+ * Character Creator/edit screen instead (STORY-05-10) — it needs a specific
+ * character in context, which this screen doesn't have. */
+@Composable
+fun SettingsScreen() {
+    val appContainer = LocalAppContainer.current
+    val scope = rememberCoroutineScope()
+
+    var host by remember { mutableStateOf("") }
+    var portText by remember { mutableStateOf("8000") }
+
+    LaunchedEffect(Unit) {
+        val config = appContainer.serverConfigStore.configFlow.first()
+        host = config.host
+        portText = config.port.toString()
+    }
+
+    val sessionActive by appContainer.wsSessionClient.sessionActiveFlow.collectAsState()
+
+    var saving by remember { mutableStateOf(false) }
+    var saveMessage by remember { mutableStateOf<String?>(null) }
+    var testing by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<ConnectionTestResult?>(null) }
+
+    fun save() {
+        val port = portText.toIntOrNull() ?: return
+        scope.launch {
+            saving = true
+            saveMessage = null
+            appContainer.serverConfigStore.save(host.trim(), port)
+            saving = false
+            saveMessage = "Saved."
+        }
+    }
+
+    fun test() {
+        val port = portText.toIntOrNull() ?: return
+        scope.launch {
+            testing = true
+            testResult = null
+            testResult = testConnection(host.trim(), port)
+            testing = false
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp),
+    ) {
+        Text("Settings", style = MaterialTheme.typography.headlineMedium)
+
+        Text(
+            "Server connection",
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp),
+        )
+        if (sessionActive) {
+            Text(
+                "A voice session is active — end it before changing the server address.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(bottom = 12.dp),
+            )
+        }
+        OutlinedTextField(
+            value = host,
+            onValueChange = { host = it },
+            label = { Text("Host") },
+            singleLine = true,
+            enabled = !sessionActive,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+        )
+        OutlinedTextField(
+            value = portText,
+            onValueChange = { portText = it.filter(Char::isDigit) },
+            label = { Text("Port") },
+            singleLine = true,
+            enabled = !sessionActive,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(
+                onClick = { save() },
+                enabled = !sessionActive && !saving && host.isNotBlank() && portText.isNotBlank(),
+            ) {
+                if (saving) CircularProgressIndicator(modifier = Modifier.size(20.dp)) else Text("Save")
+            }
+            OutlinedButton(
+                onClick = { test() },
+                enabled = !testing && host.isNotBlank() && portText.isNotBlank(),
+            ) {
+                Text(if (testing) "Testing…" else "Test connection")
+            }
+        }
+        saveMessage?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
+        }
+        testResult?.let { result ->
+            val (message, color) = when (result) {
+                is ConnectionTestResult.Reachable -> "Reachable." to MaterialTheme.colorScheme.primary
+                is ConnectionTestResult.Unreachable -> "Unreachable: ${result.reason}" to MaterialTheme.colorScheme.error
+            }
+            Text(message, style = MaterialTheme.typography.bodyMedium, color = color, modifier = Modifier.padding(top = 8.dp))
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
+
+        Text("About", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 8.dp))
+        Text(
+            "${stringResource(R.string.app_name)} ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+}
