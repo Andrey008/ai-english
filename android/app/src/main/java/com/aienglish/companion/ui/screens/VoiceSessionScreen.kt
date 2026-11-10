@@ -5,6 +5,8 @@ import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -43,6 +46,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.aienglish.companion.data.EnglishLevel
 import com.aienglish.companion.data.api.ApiResult
 import com.aienglish.companion.data.api.ScenarioDefinition
 import com.aienglish.companion.data.ws.SessionPhase
@@ -66,6 +70,13 @@ fun VoiceSessionScreen() {
 
     var scenarios by remember { mutableStateOf<List<ScenarioDefinition>>(emptyList()) }
     var selectedScenarioId by remember { mutableStateOf<String?>(null) }
+
+    // Per-session choices: the level starts from the Settings default and
+    // re-syncs if that changes; neither is written back from here.
+    val defaultLevel by appContainer.englishLevelStore.defaultLevelFlow.collectAsState(initial = EnglishLevel.DEFAULT)
+    var sessionLevel by remember { mutableStateOf(EnglishLevel.DEFAULT) }
+    LaunchedEffect(defaultLevel) { sessionLevel = defaultLevel }
+    var useMemory by remember { mutableStateOf(true) }
 
     var micGranted by remember { mutableStateOf(appContainer.audioCapture.hasPermission) }
     // Requested together with RECORD_AUDIO, but only the mic gates
@@ -165,6 +176,8 @@ fun VoiceSessionScreen() {
         appContainer.wsSessionClient.connect(
             characterId = selectedCharacterId,
             scenarioId = selectedScenarioId,
+            englishLevel = sessionLevel.id,
+            useMemory = useMemory,
         )
         val captureStarted = appContainer.audioSessionController.start()
         if (!captureStarted) {
@@ -209,6 +222,10 @@ fun VoiceSessionScreen() {
                     scenarios = scenarios,
                     selectedScenarioId = selectedScenarioId,
                     onSelectScenario = { selectedScenarioId = it },
+                    level = sessionLevel,
+                    onSelectLevel = { sessionLevel = it },
+                    useMemory = useMemory,
+                    onUseMemoryChange = { useMemory = it },
                     micGranted = micGranted,
                     onRequestMic = {
                         permissionLauncher.launch(
@@ -237,12 +254,16 @@ private fun PreSessionContent(
     scenarios: List<ScenarioDefinition>,
     selectedScenarioId: String?,
     onSelectScenario: (String?) -> Unit,
+    level: EnglishLevel,
+    onSelectLevel: (EnglishLevel) -> Unit,
+    useMemory: Boolean,
+    onUseMemoryChange: (Boolean) -> Unit,
     micGranted: Boolean,
     onRequestMic: () -> Unit,
     onStart: () -> Unit,
 ) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -286,6 +307,27 @@ private fun PreSessionContent(
                 label = { Text(scenario.title) },
                 modifier = Modifier.padding(top = 8.dp),
             )
+        }
+
+        Text(
+            "English level",
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp),
+        )
+        EnglishLevelPicker(selected = level, onSelect = onSelectLevel)
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Remember past conversations", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Off: the character starts without what it knows about you from earlier sessions.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = useMemory, onCheckedChange = onUseMemoryChange)
         }
 
         Button(onClick = onStart, modifier = Modifier.padding(top = 24.dp)) {

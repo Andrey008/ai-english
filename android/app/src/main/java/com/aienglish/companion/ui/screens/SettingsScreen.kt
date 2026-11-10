@@ -1,6 +1,8 @@
 package com.aienglish.companion.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,6 +31,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.aienglish.companion.BuildConfig
 import com.aienglish.companion.R
+import com.aienglish.companion.data.EnglishLevel
 import com.aienglish.companion.ui.LocalAppContainer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -86,6 +89,7 @@ fun SettingsScreen() {
     }
 
     val sessionActive by appContainer.wsSessionClient.sessionActiveFlow.collectAsState()
+    val defaultLevel by appContainer.englishLevelStore.defaultLevelFlow.collectAsState(initial = EnglishLevel.DEFAULT)
 
     var saving by remember { mutableStateOf(false) }
     var saveMessage by remember { mutableStateOf<String?>(null) }
@@ -114,7 +118,7 @@ fun SettingsScreen() {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium)
 
@@ -172,6 +176,19 @@ fun SettingsScreen() {
             }
             Text(message, style = MaterialTheme.typography.bodyMedium, color = color, modifier = Modifier.padding(top = 8.dp))
         }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
+
+        Text("Your English level", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 4.dp))
+        Text(
+            "Preselected for every new session — characters keep their words and sentences at this level. You can still change it per session.",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+        EnglishLevelPicker(
+            selected = defaultLevel,
+            onSelect = { level -> scope.launch { appContainer.englishLevelStore.setDefault(level) } },
+        )
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
 

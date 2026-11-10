@@ -100,6 +100,8 @@ class WsSessionClient(
     @Volatile private var sessionId: String? = null
     @Volatile private var characterId: String? = null
     @Volatile private var scenarioId: String? = null
+    @Volatile private var englishLevel: String? = null
+    @Volatile private var useMemory: Boolean = true
     @Volatile private var currentAudioSentenceIndex: Int? = null
     @Volatile private var explicitlyEnded = true
     @Volatile private var reconnectAttempt = 0
@@ -107,9 +109,16 @@ class WsSessionClient(
 
     /** Starts a fresh session (no `session_id`) — always create mode, per
      * the protocol; reconnect is this client's own internal concern. */
-    fun connect(characterId: String? = null, scenarioId: String? = null) {
+    fun connect(
+        characterId: String? = null,
+        scenarioId: String? = null,
+        englishLevel: String? = null,
+        useMemory: Boolean = true,
+    ) {
         this.characterId = characterId
         this.scenarioId = scenarioId
+        this.englishLevel = englishLevel
+        this.useMemory = useMemory
         this.sessionId = null
         explicitlyEnded = false
         reconnectAttempt = 0
@@ -183,6 +192,8 @@ class WsSessionClient(
                 } else {
                     characterId?.let { put("character_id", it) }
                     scenarioId?.let { put("scenario_id", it) }
+                    englishLevel?.let { put("english_level", it) }
+                    put("use_memory", useMemory)
                 }
             }
             webSocket.send(payload.toString())

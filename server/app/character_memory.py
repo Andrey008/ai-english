@@ -34,7 +34,7 @@ EXISTING MEMORY (what {name} currently remembers about the user):
 NEW SESSION TRANSCRIPT:
 {transcript}
 
-Write an updated memory summary for {name}: integrate anything new from this session into the existing memory (don't just append — merge). Keep it a concise paragraph, third person, focused on details that matter for continuity (names, preferences, recurring topics, ongoing situations). Output only the updated summary, nothing else.
+Write an updated memory summary for {name}: integrate anything new from this session into the existing memory (don't just append — merge). Keep it a concise paragraph, third person, about the USER: lasting facts that matter for future conversations (name, job, family, interests, preferences, ongoing life situations, English-learning goals). Leave out one-off plans and events that will be outdated by the next conversation ("this weekend", "tomorrow"), and anything {name} promised or planned to do — {name} is a voice chat partner and can't do things in the real world. If the existing memory contains such outdated items, drop them. Output only the updated summary, nothing else.
 
 Updated memory:"""
 

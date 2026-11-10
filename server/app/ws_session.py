@@ -10,7 +10,7 @@ Binary frames carry raw 16-bit PCM mono 16kHz audio, both directions.
 JSON text frames carry everything else, always with a `"type"` field.
 
 Client -> Server:
-- `{"type": "session_start", "proto_version": 1, "session_id": "<optional>", "character_id": "<optional>", "scenario_id": "<optional>"}`
+- `{"type": "session_start", "proto_version": 1, "session_id": "<optional>", "character_id": "<optional>", "scenario_id": "<optional>", "english_level": "<optional>", "use_memory": <optional bool>}`
   First message on the connection. Omit `session_id` for a new session;
   pass a previous one to attempt reconnect (honored only within the
   registry's grace window — see `session_registry.py`). `character_id`
@@ -25,6 +25,11 @@ Client -> Server:
   unknown falls back to freeform (today's behavior, unchanged). Both
   `character_id`/`scenario_id` are ignored on reconnect (the original
   session's character/scenario is already bound; no opening line replay).
+  `english_level` (`A2`/`B1`/`B2`/`C1`/`native`, `persona.ENGLISH_LEVELS`)
+  sets how simply the character speaks; omitted or unknown -> `B1`.
+  `use_memory: false` starts without the character's memory of past
+  sessions (default true; the session is still remembered afterwards).
+  Both are ignored on reconnect too.
 - `{"type": "session_end"}` — clean end, releases the session for good.
 - (binary) mic audio chunks, any size, PCM16/16kHz/mono.
 
@@ -52,13 +57,22 @@ import json
 import logging
 import re
 import time
+from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.audio_utils import pcm16_to_wav_bytes
 from app.config import resolve_repo_path
 from app.conversation_engine import SENTENCE_END, ConversationEngineError
-from app.persona import DEFAULT_SYSTEM_PROMPT, render_scenario_addendum, render_system_prompt
+from app.persona import (
+    DEFAULT_ENGLISH_LEVEL,
+    DEFAULT_SYSTEM_PROMPT,
+    ENGLISH_LEVELS,
+    render_level_addendum,
+    render_memory_addendum,
+    render_scenario_addendum,
+    render_system_prompt,
+)
 from app.session_registry import SessionConflictError
 from app.stt_service import STTServiceError
 from app.tts_service import TTSServiceError, speakable_text
@@ -108,6 +122,28 @@ class PlaybackClock:
         remaining = self._until + PLAYBACK_TAIL_MARGIN_S - time.monotonic()
         if remaining > 0:
             await asyncio.sleep(remaining)
+
+
+def compose_system_prompt(
+    preset: Any, scenario: Any, english_level: str, memory_summary: str | None
+) -> str:
+    """Persona (or the default one) + scenario addendum + English level +
+    memory of past sessions, in that order."""
+    if preset is not None:
+        prompt = preset.system_prompt_override or render_system_prompt(
+            preset.name, preset.role_description, preset.correction_style
+        )
+    else:
+        prompt = DEFAULT_SYSTEM_PROMPT
+    if scenario is not None:
+        addendum = render_scenario_addendum(
+            scenario.title, scenario.character_role_prompt_addendum, scenario.goal
+        )
+        prompt = f"{prompt}\n\n{addendum}"
+    prompt = f"{prompt}\n\n{render_level_addendum(english_level)}"
+    if memory_summary:
+        prompt = f"{prompt}\n\n{render_memory_addendum(memory_summary)}"
+    return prompt
 
 
 async def handle_ws_session(websocket: WebSocket) -> None:
@@ -174,24 +210,19 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             if scenario is None:
                 logger.warning("ws_unknown_scenario_id", extra={"scenario_id": scenario_id})
 
-        system_prompt = None
-        if preset is not None:
-            system_prompt = preset.system_prompt_override or render_system_prompt(
-                preset.name, preset.role_description, preset.correction_style
-            )
-        if scenario is not None:
-            base = system_prompt or DEFAULT_SYSTEM_PROMPT
-            system_prompt = (
-                f"{base}\n\n"
-                f"{render_scenario_addendum(scenario.title, scenario.character_role_prompt_addendum, scenario.goal)}"
-            )
-        if preset is not None:
+        english_level = first.get("english_level")
+        if english_level not in ENGLISH_LEVELS:
+            if english_level is not None:
+                logger.warning("ws_unknown_english_level", extra={"english_level": english_level})
+            english_level = DEFAULT_ENGLISH_LEVEL
+
+        use_memory = first.get("use_memory", True) is not False
+        memory_summary = None
+        if preset is not None and preset.memory_enabled and use_memory:
             memory = await db.get_character_memory(preset.id)
-            if memory and memory.get("rolling_summary"):
-                system_prompt = (
-                    f"{system_prompt}\n\nMEMORY (what you remember about this user from "
-                    f"past conversations together):\n{memory['rolling_summary']}"
-                )
+            memory_summary = memory.get("rolling_summary") if memory else None
+
+        system_prompt = compose_system_prompt(preset, scenario, english_level, memory_summary)
         conversation_engine.start_session(
             session_id,
             system_prompt=system_prompt,
@@ -205,7 +236,12 @@ async def handle_ws_session(websocket: WebSocket) -> None:
 
     logger.info(
         "ws_session_started",
-        extra={"session_id": session_id, "reconnected": claim.is_reconnect},
+        extra={
+            "session_id": session_id,
+            "reconnected": claim.is_reconnect,
+            "english_level": None if claim.is_reconnect else english_level,
+            "use_memory": None if claim.is_reconnect else use_memory,
+        },
     )
     await websocket.send_json(
         {
@@ -367,7 +403,7 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             registry.end(session_id)
             conversation_engine.end_session(session_id)
             await db.end_session(session_id)
-            if preset is not None:
+            if preset is not None and preset.memory_enabled:
                 # Fire-and-forget: fully off the session-teardown path, let
                 # alone the live conversation's — the client doesn't wait
                 # on this to get its session_ended ack.
