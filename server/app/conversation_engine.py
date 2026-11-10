@@ -58,6 +58,8 @@ class ConversationEngine:
         self._base_prompts: dict[str, str] = {}
         self._compaction_tasks: dict[str, asyncio.Task] = {}
         self._pending_summaries: dict[str, tuple[str, int]] = {}
+        self._reply_prewarm = bool(config["llm"].get("reply_prewarm", True))
+        self._reply_prewarm_tasks: dict[str, asyncio.Task] = {}
 
     async def check_ready(self) -> None:
         """Fail fast at server startup if Ollama is unreachable or the
@@ -133,9 +135,10 @@ class ConversationEngine:
         )
 
     def end_session(self, session_id: str) -> None:
-        task = self._compaction_tasks.pop(session_id, None)
-        if task is not None:
-            task.cancel()
+        for tasks in (self._compaction_tasks, self._reply_prewarm_tasks):
+            task = tasks.pop(session_id, None)
+            if task is not None:
+                task.cancel()
         self._histories.pop(session_id, None)
         self._cancel_events.pop(session_id, None)
         self._base_prompts.pop(session_id, None)
@@ -147,6 +150,7 @@ class ConversationEngine:
         then a final {"type": "done", "full_text": ...}. Raises
         ConversationEngineError on an unreachable/failing Ollama backend.
         """
+        await self._cancel_reply_prewarm(session_id)
         await self._defer_compaction(session_id)
         history = self._histories.setdefault(
             session_id, [{"role": "system", "content": DEFAULT_SYSTEM_PROMPT}]
@@ -201,7 +205,54 @@ class ConversationEngine:
             yield {"type": "sentence", "text": buf.strip()}
         history.append({"role": "assistant", "content": full_reply})
         self._maybe_start_compaction(session_id)
+        if session_id not in self._compaction_tasks:  # its summary request already extends this history
+            self._start_reply_prewarm(session_id, history)
         yield {"type": "done", "full_text": full_reply}
+
+    def _start_reply_prewarm(self, session_id: str, history: list[dict]) -> None:
+        """Ollama with gemma2 checkpoints its cache only at the end of a
+        prompt, not after the tokens it generated — so without this the
+        next turn re-reads the whole previous reply before the first
+        token (~0.25-0.5s, growing with reply length). Re-evaluating
+        history + reply with `num_predict 1` while the reply is still
+        being spoken makes the next request a cached prefix again.
+        Measured (AE-2 bench, free mode): first sentence 1.20s -> 0.81s,
+        on par with MLX, which caches generated tokens itself (ADR-0013).
+        """
+        if not self._reply_prewarm:
+            return
+        messages = list(history)  # snapshot: the next user turn appends to `history`
+        task = asyncio.get_running_loop().create_task(self._run_reply_prewarm(session_id, messages))
+        self._reply_prewarm_tasks[session_id] = task
+        task.add_done_callback(
+            lambda t: self._reply_prewarm_tasks.pop(session_id, None)
+            if self._reply_prewarm_tasks.get(session_id) is t else None
+        )
+
+    async def _run_reply_prewarm(self, session_id: str, messages: list[dict]) -> None:
+        started = time.monotonic()
+        try:
+            await self._client.chat(
+                model=self._model, messages=messages, stream=False, think=False, options={"num_predict": 1}
+            )
+        except (ollama.ResponseError, ConnectionError, OSError) as exc:
+            logger.warning("llm_reply_prewarm_failed", extra={"session_id": session_id, "error": str(exc)})
+            return
+        logger.info(
+            "llm_reply_prewarm_done",
+            extra={"session_id": session_id, "duration_s": round(time.monotonic() - started, 2)},
+        )
+
+    async def _cancel_reply_prewarm(self, session_id: str) -> None:
+        """Normally long finished (it takes ~0.5-1s; the reply's playback
+        takes several). If the user cuts in first, their turn wins —
+        same rule as `_defer_compaction`."""
+        task = self._reply_prewarm_tasks.pop(session_id, None)
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.wait({task})
+        logger.info("llm_reply_prewarm_cancelled", extra={"session_id": session_id})
 
     def _maybe_start_compaction(self, session_id: str) -> None:
         """In-session context compaction (STORY-05-11 follow-up). History

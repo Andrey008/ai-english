@@ -87,7 +87,7 @@ def _gb(mb: float | None) -> str:
 def conditions(reports: list[dict]) -> list[str]:
     """Flag differences that would make the comparison unfair."""
     warnings = []
-    for key in ("fixture", "mode", "text_source", "params"):
+    for key in ("fixture", "mode", "text_source", "inputs_sha256", "params"):
         values = {json.dumps(r.get(key), sort_keys=True) for r in reports}
         if len(values) > 1:
             warnings.append(f"⚠ `{key}` differs between runs: {sorted(values)}")

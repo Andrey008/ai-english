@@ -24,6 +24,9 @@ llm:
   # pulled; qwen3.8:27b measured too slow for live voice at 3.9 tok/s).
   model: gemma2:27b
   learning_layer_model: gemma2:27b   # reserved, non-critical-path use only
+  # Re-cache history + the reply just generated while it's being spoken,
+  # so the next turn doesn't re-read the reply (ADR-0013: ~-0.4s TTFA).
+  reply_prewarm: true
   # In-session context compaction (app/conversation_engine.py): once the
   # history estimate passes trigger_tokens, older turns are summarized in
   # the background and the last keep_recent_messages stay verbatim.

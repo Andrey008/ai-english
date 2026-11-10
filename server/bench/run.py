@@ -32,11 +32,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import platform
 import secrets
 import subprocess
 import sys
+import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +77,7 @@ async def run_conversation(
     max_turns: int | None = None,
     sampler: MemorySampler | None = None,
     verbose: bool = True,
+    prewarm_reply: bool = False,
 ) -> list[TurnResult]:
     messages = [{"role": "system", "content": f"[benchmark run {secrets.token_hex(4)}]\n{system_prompt}"}]
     results = []
@@ -89,11 +92,17 @@ async def run_conversation(
                                 total_s=0.0, chunks=0, reply="", error=f"{type(exc).__name__}: {exc}")
         if sampler is not None:
             result.peak_rss_mb = round(sampler.window().rss_mb, 1)
+        reply = turn.assistant_reference if mode == "teacher" else result.reply
+        messages.append({"role": "assistant", "content": reply})
+        if prewarm_reply and index < len(fixture.turns[:max_turns]) - 1:
+            # Live, this runs while TTS plays the reply; awaited here so it
+            # never overlaps the next measured turn.
+            started = time.perf_counter()
+            await backend.prewarm(messages, params)
+            result.prewarm_s = round(time.perf_counter() - started, 3)
         results.append(result)
         if verbose:
             print(_format_turn(result), flush=True)
-        reply = turn.assistant_reference if mode == "teacher" else result.reply
-        messages.append({"role": "assistant", "content": reply})
     return results
 
 
@@ -106,7 +115,8 @@ def _format_turn(r: TurnResult) -> str:
     return (
         f"  turn {r.turn:>2} {tag}  ttft {s(r.ttft_s)}s  first_sentence {s(r.first_sentence_s)}s  "
         f"total {s(r.total_s)}s  decode {s(r.decode_tps)} tok/s  prefill {s(r.prefill_tps)} tok/s  "
-        f"| {r.reply.strip()[:60]!r}"
+        + (f"prewarm {r.prewarm_s:.2f}s  " if r.prewarm_s is not None else "")
+        + f"| {r.reply.strip()[:60]!r}"
     )
 
 
@@ -126,12 +136,22 @@ def _machine() -> dict:
     }
 
 
+def inputs_digest(fixture: Fixture, system_prompt: str, text_source: str, turns: int | None) -> str:
+    """Hash of everything fed to the model, so `compare` can catch runs
+    whose transcripts or prompt changed in between (e.g. a re-recorded turn)."""
+    parts = [system_prompt] + [f"{t.user_text(text_source)}\0{t.assistant_reference}" for t in fixture.turns[:turns]]
+    return hashlib.sha256("\0\0".join(parts).encode()).hexdigest()[:16]
+
+
 async def main(argv: list[str] | None = None) -> Path:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("fixture", type=Path, help="fixture dir (recorded) or script YAML (text only)")
     ap.add_argument("--backend", required=True, choices=["ollama", "openai"])
     ap.add_argument("--model", required=True)
     ap.add_argument("--base-url")
+    ap.add_argument("--fold-system", action="store_true",
+                    help="openai backend: merge the system prompt into the first user turn, as Ollama's gemma2 "
+                         "template does (needed for Gemma 2 on mlx_lm.server)")
     ap.add_argument("--label", required=True, help="name for this backend+model in reports")
     ap.add_argument("--mode", choices=["teacher", "free"], default="teacher")
     ap.add_argument("--text-source", choices=["stt", "script"],
@@ -143,6 +163,9 @@ async def main(argv: list[str] | None = None) -> Path:
     ap.add_argument("--process-pattern", help="regex for the backend's process command line (memory sampling)")
     ap.add_argument("--baseline-system-mb", type=float,
                     help="system used memory before the backend started (`python -m bench.memory`)")
+    ap.add_argument("--prewarm-reply", action="store_true",
+                    help="after each reply, re-evaluate history + reply (num_predict 1) before the next turn, "
+                         "as the live server could while TTS plays (Ollama backend)")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args(argv)
 
@@ -150,7 +173,7 @@ async def main(argv: list[str] | None = None) -> Path:
     text_source = args.text_source or ("stt" if all(t.user_stt for t in fixture.turns) else "script")
     params = GenParams(max_tokens=args.max_tokens)
     system_prompt = system_prompt_for(fixture)
-    backend = make_backend(args.backend, args.model, args.base_url)
+    backend = make_backend(args.backend, args.model, args.base_url, args.fold_system)
     print(f"{args.label}: {fixture.name} ({len(fixture.turns[:args.turns])} turns), mode={args.mode}, "
           f"text={text_source}, warmup={args.warmup}, repeats={args.repeats}")
 
@@ -161,12 +184,12 @@ async def main(argv: list[str] | None = None) -> Path:
         for i in range(args.warmup):
             print(f"warmup {i + 1}/{args.warmup} (discarded)")
             await run_conversation(backend, fixture, system_prompt, params, args.mode, text_source,
-                                   args.turns, verbose=False)
+                                   args.turns, verbose=False, prewarm_reply=args.prewarm_reply)
         sampler.overall = type(sampler.overall)()  # peaks from the measured repeats only
         for i in range(args.repeats):
             print(f"repeat {i + 1}/{args.repeats}")
             turns = await run_conversation(backend, fixture, system_prompt, params, args.mode, text_source,
-                                           args.turns, sampler=sampler)
+                                           args.turns, sampler=sampler, prewarm_reply=args.prewarm_reply)
             runs.append({"repeat": i, "turns": [asdict(t) for t in turns]})
     finally:
         await sampler.stop()
@@ -174,10 +197,12 @@ async def main(argv: list[str] | None = None) -> Path:
 
     report = {
         "label": args.label,
-        "backend": {"kind": args.backend, "model": args.model, "base_url": args.base_url},
+        "backend": {"kind": args.backend, "model": args.model, "base_url": args.base_url,
+                    "fold_system": args.fold_system, "prewarm_reply": args.prewarm_reply},
         "fixture": fixture.name,
         "mode": args.mode,
         "text_source": text_source,
+        "inputs_sha256": inputs_digest(fixture, system_prompt, text_source, args.turns),
         "params": asdict(params),
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "machine": _machine(),

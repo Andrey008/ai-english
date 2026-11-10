@@ -93,8 +93,18 @@ uv run python -m bench.run bench/fixtures/smalltalk_b1 \
     --label mlx-gemma2-27b --process-pattern mlx_lm --baseline-system-mb <from step 3>
 ```
 
-Check the exact Hugging Face repo id (e.g. under `mlx-community`) and
-the quantization before downloading. Any other OpenAI-compatible server
+For Gemma 2 use `mlx-community/gemma-2-27b-it-bf16-4bit` and pass
+`--fold-system`:
+
+- The fp16 conversion (`gemma-2-27b-it-4bit`) overflows and outputs only
+  `<pad>`.
+- Gemma 2's HF chat template rejects the system role. `--fold-system`
+  merges it into the first user turn, exactly as Ollama's gemma2 template
+  does.
+
+Hugging Face metadata can be wrong. The fp16 repo lists two files with
+the same hash, and `hf download` wrote a truncated shard. Check every
+`.safetensors` against its `lfs.sha256` before trusting a run. Any other OpenAI-compatible server
 (llama-server, LM Studio) works the same way with `--backend openai`.
 
 ### 6. Compare
@@ -108,6 +118,14 @@ The first file is the baseline. Other rows show the change against it,
 and ✓ marks an improvement of 5% or more. Copy the table into the AE-2
 results and the ADR.
 
+### Free mode and `--prewarm-reply`
+
+`--mode free` keeps each engine's own replies, as a live session does.
+Timings aren't byte-comparable, but this is where cache behaviour shows.
+`--prewarm-reply` (Ollama) re-evaluates history + reply after each turn,
+mirroring `ConversationEngine`'s reply prewarm (ADR-0013). Each turn's
+`prewarm_s` must stay well under the reply's playback time.
+
 ## Metrics
 
 | Field | Meaning |
@@ -119,10 +137,13 @@ results and the ADR.
 | `peak RSS` | RSS of the matching processes. Metal buffers may not all show up here. |
 | `peak system Δ` | `vm_stat` used memory (active + wired + compressed) above the baseline from step 3. Includes GPU allocations in unified memory. |
 
-## Known gap
+## Results so far
 
-This measures the LLM layer, not the live WebSocket pipeline. The server
-only speaks to Ollama today. If MLX wins, the next step is an MLX path in
-`ConversationEngine`. The prewarm and compaction there depend on Ollama's
-prefix-cache behaviour, so they must be rechecked. Then the real-pipeline
-check runs again (`scripts/live_persona_spotcheck.py`, `ws_turn_timing`).
+See ADR-0013:
+- Ollama and MLX decode at the same speed (~14.5 tok/s, bandwidth-bound).
+- MLX's per-turn advantage came from caching its own replies. Ollama now
+  gets the same through the reply prewarm.
+- The decision: stay on Ollama.
+
+This measures the LLM layer, not the live WebSocket pipeline. Confirm
+any change there with `ws_turn_timing` in a real session.

@@ -5,13 +5,14 @@ import httpx
 import numpy as np
 import pytest
 
-from bench.backends import Delta, Done, GenParams, OllamaBackend, OpenAICompatBackend, ServerStats
+from bench.backends import (Delta, Done, GenParams, OllamaBackend, OpenAICompatBackend, ServerStats,
+                            fold_system_prompt)
 from bench.compare import conditions, table
 from bench.fixture import SCRIPTS_DIR, Fixture, Turn
 from bench.memory import parse_ps_rss, parse_vm_stat
 from bench.metrics import measure_turn, summarize
 from bench.record import to_pcm16_16k
-from bench.run import run_conversation, system_prompt_for
+from bench.run import inputs_digest, run_conversation, system_prompt_for
 
 
 class FakeBackend:
@@ -31,6 +32,9 @@ class FakeBackend:
             await asyncio.sleep(self.delay)
             yield Delta(word + " ")
         yield Done(self.stats or ServerStats())
+
+    async def prewarm(self, messages, params):
+        self.prewarms = getattr(self, "prewarms", []) + [[dict(m) for m in messages]]
 
     async def aclose(self):
         pass
@@ -101,12 +105,29 @@ def test_teacher_mode_sends_identical_prompts_to_every_backend():
     assert last[0]["content"].startswith("[benchmark run ") and last[0]["content"].endswith("SYSTEM")
 
 
+def test_inputs_digest_changes_with_transcript():
+    fixture = small_fixture()
+    before = inputs_digest(fixture, "S", "script", None)
+    fixture.turns[1].user_script = "Fine."
+    assert inputs_digest(fixture, "S", "script", None) != before
+
+
 def test_free_mode_keeps_own_replies_and_marks_cold_turn():
     backend = FakeBackend(reply="Mine.")
     results = asyncio.run(run_conversation(backend, small_fixture(), "S", GenParams(), "free", "script",
                                            verbose=False))
     assert [r.cold for r in results] == [True, False, False]
     assert [m["content"] for m in backend.prompts[-1] if m["role"] == "assistant"] == ["Mine. ", "Mine. "]
+
+
+def test_prewarm_reply_refreshes_cache_with_own_reply_before_next_turn():
+    backend = FakeBackend(reply="Mine.")
+    results = asyncio.run(run_conversation(backend, small_fixture(), "S", GenParams(), "free", "script",
+                                           verbose=False, prewarm_reply=True))
+    assert len(backend.prewarms) == 2  # not after the last turn
+    assert backend.prewarms[0][-1] == {"role": "assistant", "content": "Mine. "}
+    assert backend.prompts[1][:len(backend.prewarms[0])] == backend.prewarms[0]  # next prompt extends it
+    assert [r.prewarm_s is not None for r in results] == [True, True, False]
 
 
 def test_each_repeat_gets_a_fresh_cache_busting_tag():
@@ -175,6 +196,14 @@ def test_openai_backend_parses_sse_usage_and_llama_server_timings():
     assert seen["body"]["max_tokens"] == GenParams.max_tokens
 
 
+def test_fold_system_prompt_matches_ollama_gemma2_template():
+    messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hey"}, {"role": "user", "content": "Bye"}]
+    assert fold_system_prompt(messages) == [{"role": "user", "content": "SYS Hi"}, *messages[2:]]
+    assert messages[1]["content"] == "Hi"  # input untouched
+    assert fold_system_prompt(messages[1:]) == messages[1:]
+
+
 VM_STAT = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
 Pages free:                                  1000.
 Pages active:                                 600.
@@ -220,6 +249,8 @@ def test_compare_table_shows_change_vs_baseline():
 
 def test_compare_flags_unequal_conditions():
     assert conditions([_report("a", 1.0), _report("b", 1.0)]) == []
+    changed = {**_report("b", 1.0), "inputs_sha256": "other"}
+    assert any("inputs_sha256" in w for w in conditions([_report("a", 1.0), changed]))
     warnings = conditions([_report("a", 1.0), _report("b", 1.0, params={"max_tokens": 50})])
     assert any("params" in w for w in warnings)
 

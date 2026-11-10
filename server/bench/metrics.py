@@ -31,6 +31,7 @@ class TurnResult:
     server: dict[str, Any] = field(default_factory=dict)
     prefill_tps: float | None = None  # server-reported prompt tokens / prompt eval time
     peak_rss_mb: float | None = None
+    prewarm_s: float | None = None  # --prewarm-reply: cache refresh after this reply (hidden behind TTS)
     error: str | None = None
 
 

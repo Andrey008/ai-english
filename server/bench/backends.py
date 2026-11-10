@@ -94,6 +94,21 @@ class OllamaBackend:
                     )
                 )
 
+    async def prewarm(self, messages: list[dict], params: GenParams) -> None:
+        """Evaluate `messages` (history + the reply just generated) with
+        `num_predict 1`, so the next turn's prompt is a cached prefix.
+        Ollama/gemma2 checkpoints the cache only at the end of a prompt,
+        not after generated tokens — without this it re-reads its own
+        last reply on every turn (ADR-0013 revision)."""
+        await self._client.chat(
+            model=self.model,
+            messages=messages,
+            stream=False,
+            think=False,
+            options={"temperature": params.temperature, "seed": params.seed, "num_predict": 1,
+                     "num_ctx": params.num_ctx},
+        )
+
     async def aclose(self) -> None:
         pass
 
@@ -104,14 +119,16 @@ class OpenAICompatBackend:
 
     kind = "openai"
 
-    def __init__(self, model: str, base_url: str = "http://127.0.0.1:8080", transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, model: str, base_url: str = "http://127.0.0.1:8080",
+                 transport: httpx.AsyncBaseTransport | None = None, fold_system: bool = False):
         self.model = model
+        self.fold_system = fold_system
         self._client = httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(300.0), transport=transport)
 
     async def stream_chat(self, messages: list[dict], params: GenParams) -> AsyncIterator[Delta | Done]:
         body = {
             "model": self.model,
-            "messages": messages,
+            "messages": fold_system_prompt(messages) if self.fold_system else messages,
             "stream": True,
             "stream_options": {"include_usage": True},
             "temperature": params.temperature,
@@ -139,6 +156,20 @@ class OpenAICompatBackend:
         await self._client.aclose()
 
 
+def fold_system_prompt(messages: list[dict]) -> list[dict]:
+    """Merge a leading system message into the first user message, the
+    way Ollama's gemma2 template does (`{{ .System }} {{ .Prompt }}`) —
+    for chat templates that reject the system role (Gemma 2 on HF/MLX)."""
+    if not messages or messages[0]["role"] != "system":
+        return messages
+    system, rest = messages[0]["content"], [dict(m) for m in messages[1:]]
+    if rest and rest[0]["role"] == "user":
+        rest[0]["content"] = f"{system} {rest[0]['content']}"
+    else:
+        rest.insert(0, {"role": "user", "content": system})
+    return rest
+
+
 def _merge_stats(stats: ServerStats, event: dict) -> None:
     usage = event.get("usage")
     if usage:
@@ -160,9 +191,9 @@ def _ms_to_s(value: float | None) -> float | None:
     return None if value is None else value / 1e3
 
 
-def make_backend(kind: str, model: str, base_url: str | None) -> Backend:
+def make_backend(kind: str, model: str, base_url: str | None, fold_system: bool = False) -> Backend:
     if kind == "ollama":
         return OllamaBackend(model, base_url or "http://127.0.0.1:11434")
     if kind == "openai":
-        return OpenAICompatBackend(model, base_url or "http://127.0.0.1:8080")
+        return OpenAICompatBackend(model, base_url or "http://127.0.0.1:8080", fold_system=fold_system)
     raise ValueError(f"unknown backend kind {kind!r} (expected 'ollama' or 'openai')")
