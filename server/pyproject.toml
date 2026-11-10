@@ -20,6 +20,9 @@ dependencies = [
 package = false
 
 [dependency-groups]
+bench = [
+    "sounddevice>=0.5.6",
+]
 dev = [
     "pytest>=9.2.0",
 ]

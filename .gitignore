@@ -53,5 +53,11 @@ local.properties
 /poc/**/*.wav
 /poc/**/*.aiff
 
+# LLM benchmark (Chronix AE-2): recorded fixtures are the developer's voice
+# (repo is public); raw result files are machine-specific — summaries go
+# into Docs/ instead.
+/server/bench/fixtures/
+/server/bench/results/
+
 # Editor
 .vscode/

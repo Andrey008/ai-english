@@ -1,0 +1,21 @@
+# Mock interview with Sarah at B1 — longer, more structured user answers.
+name: interview_coach_b1
+character_id: sarah_interview_coach
+english_level: B1
+turns:
+  - user: "Hi Sarah. I want to prepare for an interview for a backend developer position."
+    assistant: "Great, let's do it! Is it a big company or a startup, and what technologies do they use?"
+  - user: "It's a startup, they use Python and Postgres, and they want someone with some DevOps experience."
+    assistant: "Got it. Let's start then. Could you tell me a little about yourself and your experience?"
+  - user: "Sure. I have been working as a backend developer for six years. Mostly I build APIs in Python, and I also work with databases and Docker."
+    assistant: "Thank you. What was the most interesting project you worked on in the last two years?"
+  - user: "I think it was a voice assistant for practicing English. I built the server, the streaming pipeline and an Android app."
+    assistant: "That sounds very interesting! What was the hardest technical problem in that project, and how did you solve it?"
+  - user: "The hardest problem was latency. The answer was too slow, so I measured every step and moved the slow parts to the background."
+    assistant: "Good answer. Can you give me one example of a slow part you moved to the background?"
+  - user: "For example, the summary of the conversation. Now it runs while the user is listening, so the user doesn't wait for it."
+    assistant: "Nice. Now a different question: tell me about a time you disagreed with a teammate. What happened?"
+  - user: "Once a colleague wanted to use a new database, but I thought it was too risky. We made a small test, and then we decided together."
+    assistant: "That's a mature way to handle it. Last question from me: why do you want to join a startup?"
+  - user: "Because I like to work fast, and I want to see how my work helps real users. Can you give me feedback on my answers?"
+    assistant: "Of course! Your answers were clear and had good examples. One tip: start with the result first, then explain how you got there."

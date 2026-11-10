@@ -1,0 +1,31 @@
+# Freeform chat with Alex at B1. `user` lines are read aloud by the
+# developer (bench/record.py); `assistant` lines are the fixed reference
+# replies that build the teacher-forced history (bench/run.py --mode teacher).
+name: smalltalk_b1
+character_id: alex_default
+english_level: B1
+turns:
+  - user: "Hi Alex! I just came back from work and, honestly, I'm a bit tired today."
+    assistant: "Hey, welcome back! Long day? What kept you so busy?"
+  - user: "We had a release at work, so I was fixing bugs all day long."
+    assistant: "Oh, release days are tough. Did everything go well in the end?"
+  - user: "Mostly yes, but one small bug is still there. I will fix it tomorrow."
+    assistant: "Sounds like a plan. Do you usually work on the backend or the frontend?"
+  - user: "Backend, mostly Python. I also write some small things for Android."
+    assistant: "Nice mix! What do you like more, Python or Android?"
+  - user: "I think Python, because it is simple and I can do things very fast."
+    assistant: "That makes sense, Python is great for that. What do you do to relax after a day like this?"
+  - user: "Usually I go for a walk, or I watch some series in English."
+    assistant: "Watching series in English is a great habit. What are you watching right now?"
+  - user: "Right now I'm watching a series about lawyers, but I forgot the name."
+    assistant: "Ha, it happens! Is it more of a drama, or is it funny?"
+  - user: "It's a drama, but sometimes it's funny too. The main character is very clever."
+    assistant: "I love clever main characters. Do you understand everything, or do you use subtitles?"
+  - user: "I use English subtitles, because they speak very fast and use many legal words."
+    assistant: "Smart choice, legal words are hard even for native speakers. Have you learned any useful phrases from it?"
+  - user: "Yes, for example, 'objection' and 'let me be clear'. I like that one."
+    assistant: "'Let me be clear' is a really useful one, you can use it at work too! Have you tried it in a meeting yet?"
+  - user: "Not yet, but maybe I will try it tomorrow at the daily meeting."
+    assistant: "You should, it will sound very confident. How long are your daily meetings usually?"
+  - user: "About fifteen minutes. Okay Alex, I think I need to cook dinner now."
+    assistant: "Of course, go enjoy your dinner! What are you going to make?"
