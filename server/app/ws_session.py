@@ -89,7 +89,26 @@ PCM_BYTES_PER_SECOND = 32000  # 16kHz * 16-bit mono
 # duration, before the phone is actually silent again.
 PLAYBACK_TAIL_MARGIN_S = 0.4
 # whisper.cpp's non-speech markers ("[BLANK_AUDIO]", "(music)", ...).
-NON_SPEECH_MARKER = re.compile(r"\[[^\]]*\]|\([^)]*\)")
+NON_SPEECH_MARKER = re.compile(r"\[[^\]]*\]|\([^)]*\)|\*[^*]*\*")
+
+# What large-v3-turbo "hears" in short non-speech noise such as keyboard
+# clicks (2026-11-11 phone test: 1.6s of typing -> "Thank you.").
+# medium.en returned [BLANK_AUDIO] on the same clips. Dropped only when
+# the whole utterance is that short, so a real "Thank you" at the end
+# of a longer sentence is kept.
+HALLUCINATION_MAX_S = 2.5
+_HALLUCINATIONS = frozenset({
+    "thank you", "thank you very much", "thanks", "thanks for watching",
+    "thank you for watching", "bye", "bye bye", "you", "so", "okay", "oh",
+    "hmm", "um", "uh",
+})
+
+
+def is_noise_hallucination(transcript: str, audio_bytes: int) -> bool:
+    if audio_bytes / PCM_BYTES_PER_SECOND > HALLUCINATION_MAX_S:
+        return False
+    words = re.sub(r"[^a-z' ]+", " ", transcript.lower()).split()
+    return not words or " ".join(words) in _HALLUCINATIONS
 
 
 DEBUG_AUDIO_DIR = resolve_repo_path("server/data/debug_audio")
@@ -122,6 +141,13 @@ class PlaybackClock:
         remaining = self._until + PLAYBACK_TAIL_MARGIN_S - time.monotonic()
         if remaining > 0:
             await asyncio.sleep(remaining)
+
+
+def turn_patience_s(config: dict[str, Any], english_level: str) -> float:
+    """Extra silence after a VAD pause before a finished-looking utterance
+    counts as the end of the turn (`vad.patience_ms_by_level`)."""
+    by_level = config["vad"].get("patience_ms_by_level") or {}
+    return max(0.0, float(by_level.get(english_level, 0)) / 1000)
 
 
 def compose_system_prompt(
@@ -241,6 +267,7 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             "reconnected": claim.is_reconnect,
             "english_level": None if claim.is_reconnect else english_level,
             "use_memory": None if claim.is_reconnect else use_memory,
+            "turn_patience_s": turn_patience_s(app.state.config, english_level),
         },
     )
     await websocket.send_json(
@@ -265,6 +292,9 @@ async def handle_ws_session(websocket: WebSocket) -> None:
     # cancels the decision; the next pause re-decides on all the audio
     # so far, concatenated.
     hold_s = app.state.config["vad"].get("incomplete_hold_ms", 2000) / 1000
+    patience_s = turn_patience_s(app.state.config, english_level)
+    stt_context = bool(app.state.config["stt"].get("context_prompt", False))
+    save_utterances = bool(app.state.config["stt"].get("save_utterances", False))
     pending_audio = bytearray()
     decide_task: asyncio.Task | None = None
 
@@ -278,15 +308,20 @@ async def handle_ws_session(websocket: WebSocket) -> None:
 
     async def _decide_turn() -> None:
         nonlocal turn_task
+        paused_at = time.monotonic()
         audio = bytes(pending_audio)
         try:
-            transcript = await stt_service.transcribe(pcm16_to_wav_bytes(audio))
+            stt_prompt = conversation_engine.last_reply(session_id) if stt_context else None
+            transcript = await stt_service.transcribe(pcm16_to_wav_bytes(audio), prompt=stt_prompt)
         except STTServiceError as exc:
             logger.warning("ws_turn_stt_failed", extra={"session_id": session_id, "error": str(exc)})
             await websocket.send_json({"type": "error", "message": f"transcription failed: {exc}"})
             pending_audio.clear()
             return
         transcript = NON_SPEECH_MARKER.sub("", transcript).strip()
+        if transcript and is_noise_hallucination(transcript, len(audio)):
+            logger.info("ws_turn_hallucination_dropped", extra={"session_id": session_id, "transcript": transcript})
+            transcript = ""
         if not transcript:
             # VAD heard "speech" that STT found empty. Kept on disk to tell
             # silence/echo/corrupted audio apart (STORY-05-11: after a
@@ -299,7 +334,21 @@ async def handle_ws_session(websocket: WebSocket) -> None:
         if held:
             logger.info("ws_turn_held_incomplete", extra={"session_id": session_id, "transcript": transcript})
             await asyncio.sleep(hold_s)
+        elif (remaining := patience_s - (time.monotonic() - paused_at)) > 0:
+            # Finished-looking text still gets the level's extra pause
+            # (the STT call above already counts towards it): learners
+            # stop mid-thought to find a word, and whisper puts a period
+            # on almost anything (2026-11-11 phone test).
+            await asyncio.sleep(remaining)
         pending_audio.clear()
+        if save_utterances:
+            # Real phone speech for offline STT evaluation (`bench.stt_eval`
+            # takes fixtures; this log line has what's needed to build one).
+            logger.info(
+                "ws_turn_audio_saved",
+                extra={"session_id": session_id, "audio_path": _save_debug_audio(session_id, audio),
+                       "transcript": transcript, "stt_prompt": stt_prompt},
+            )
         turn_task = asyncio.create_task(run_turn(audio, transcript, held))
 
     async def run_turn(utterance: bytes, transcript: str, held: bool) -> None:

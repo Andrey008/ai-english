@@ -134,6 +134,13 @@ class ConversationEngine:
             extra={"session_id": session_id, "duration_s": round(time.monotonic() - started, 2)},
         )
 
+    def last_reply(self, session_id: str) -> str | None:
+        """The character's most recent line (STT context prompt)."""
+        for message in reversed(self._histories.get(session_id, [])):
+            if message["role"] == "assistant":
+                return message["content"]
+        return None
+
     def end_session(self, session_id: str) -> None:
         for tasks in (self._compaction_tasks, self._reply_prewarm_tasks):
             task = tasks.pop(session_id, None)

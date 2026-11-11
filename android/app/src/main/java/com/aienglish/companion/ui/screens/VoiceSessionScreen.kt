@@ -33,6 +33,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +54,7 @@ import com.aienglish.companion.data.ws.SessionPhase
 import com.aienglish.companion.data.ws.WsEvent
 import com.aienglish.companion.service.VoiceSessionForegroundService
 import com.aienglish.companion.ui.LocalAppContainer
+import kotlinx.coroutines.launch
 
 private sealed class TranscriptEntry {
     data class User(val text: String) : TranscriptEntry()
@@ -77,6 +79,8 @@ fun VoiceSessionScreen() {
     var sessionLevel by remember { mutableStateOf(EnglishLevel.DEFAULT) }
     LaunchedEffect(defaultLevel) { sessionLevel = defaultLevel }
     var useMemory by remember { mutableStateOf(true) }
+    val scope = rememberCoroutineScope()
+    val forcePhoneMic by appContainer.audioPrefsStore.forcePhoneMicFlow.collectAsState(initial = false)
 
     var micGranted by remember { mutableStateOf(appContainer.audioCapture.hasPermission) }
     // Requested together with RECORD_AUDIO, but only the mic gates
@@ -179,7 +183,7 @@ fun VoiceSessionScreen() {
             englishLevel = sessionLevel.id,
             useMemory = useMemory,
         )
-        val captureStarted = appContainer.audioSessionController.start()
+        val captureStarted = appContainer.audioSessionController.start(useHeadsetMic = !forcePhoneMic)
         if (!captureStarted) {
             errorMessage = "Microphone unavailable — the character can still talk, but won't hear you."
         }
@@ -226,6 +230,10 @@ fun VoiceSessionScreen() {
                     onSelectLevel = { sessionLevel = it },
                     useMemory = useMemory,
                     onUseMemoryChange = { useMemory = it },
+                    forcePhoneMic = forcePhoneMic,
+                    onForcePhoneMicChange = { enabled ->
+                        scope.launch { appContainer.audioPrefsStore.setForcePhoneMic(enabled) }
+                    },
                     micGranted = micGranted,
                     onRequestMic = {
                         permissionLauncher.launch(
@@ -258,6 +266,8 @@ private fun PreSessionContent(
     onSelectLevel: (EnglishLevel) -> Unit,
     useMemory: Boolean,
     onUseMemoryChange: (Boolean) -> Unit,
+    forcePhoneMic: Boolean,
+    onForcePhoneMicChange: (Boolean) -> Unit,
     micGranted: Boolean,
     onRequestMic: () -> Unit,
     onStart: () -> Unit,
@@ -328,6 +338,20 @@ private fun PreSessionContent(
                 )
             }
             Switch(checked = useMemory, onCheckedChange = onUseMemoryChange)
+        }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Use phone microphone", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Records with the phone even when a Bluetooth headset is connected: clearer sound, but keep the phone close.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = forcePhoneMic, onCheckedChange = onForcePhoneMicChange)
         }
 
         Button(onClick = onStart, modifier = Modifier.padding(top = 24.dp)) {

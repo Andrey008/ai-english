@@ -27,6 +27,11 @@ from app.config import resolve_repo_path
 logger = logging.getLogger("ai_english.stt")
 
 
+# Whisper's prompt window is 224 tokens; the end of the reply (where its
+# question usually is) is the useful part.
+PROMPT_MAX_CHARS = 600
+
+
 class STTServiceError(RuntimeError):
     pass
 
@@ -39,6 +44,9 @@ class STTService:
         self._host = stt_config["host"]
         self._port = int(stt_config["port"])
         self._startup_timeout_s = float(stt_config.get("startup_timeout_s", 60))
+        # Pinned, never "auto": large-v3-turbo is multilingual, and accented
+        # English must not be detected as another language.
+        self._language = stt_config.get("language", "en")
         self._base_url = f"http://{self._host}:{self._port}"
         self._process: subprocess.Popen | None = None
         self._client: httpx.AsyncClient | None = None
@@ -56,6 +64,7 @@ class STTService:
                 "-m", str(self._model_path),
                 "--host", self._host,
                 "--port", str(self._port),
+                "-l", self._language,
                 "-nt",
             ],
             stdout=subprocess.DEVNULL,
@@ -82,15 +91,21 @@ class STTService:
             await asyncio.sleep(0.5)
         raise STTServiceError("whisper-server did not become ready in time")
 
-    async def transcribe(self, wav_bytes: bytes) -> str:
-        """Transcribe a 16kHz mono WAV clip. Raises STTServiceError on failure."""
+    async def transcribe(self, wav_bytes: bytes, prompt: str | None = None) -> str:
+        """Transcribe a 16kHz mono WAV clip. `prompt` is whisper's initial
+        prompt: text that came just before this clip (the character's
+        last reply), which biases decoding towards the words in play.
+        Raises STTServiceError on failure."""
         if self._client is None:
             raise STTServiceError("STT service not started")
+        data = {"temperature": "0.0", "response_format": "text"}
+        if prompt:
+            data["prompt"] = prompt[-PROMPT_MAX_CHARS:]
         try:
             resp = await self._client.post(
                 "/inference",
                 files={"file": ("audio.wav", wav_bytes, "audio/wav")},
-                data={"temperature": "0.0", "response_format": "text"},
+                data=data,
             )
         except httpx.TransportError as exc:
             raise STTServiceError(f"whisper-server request failed: {exc}") from exc

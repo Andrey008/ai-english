@@ -33,8 +33,7 @@ class AudioCapture(private val context: Context) {
     @Volatile private var running = false
 
     /** Drops captured chunks without stopping the mic — cheaper than a
-     * full stop/start cycle for a quick mute toggle, and keeps
-     * `AudioRecord`'s echo-cancellation/AGC state warm. */
+     * full stop/start cycle for a quick mute toggle. */
     @Volatile var muted: Boolean = false
 
     val hasPermission: Boolean
@@ -48,7 +47,7 @@ class AudioCapture(private val context: Context) {
      * isn't granted or the device can't support this exact format —
      * both real, expected outcomes, not exceptional ones. Already
      * running is a no-op success. */
-    fun start(onChunk: (ByteArray) -> Unit): Boolean {
+    fun start(headsetMic: Boolean = false, onChunk: (ByteArray) -> Unit): Boolean {
         if (!hasPermission) return false
         if (audioRecord != null) return true
 
@@ -60,12 +59,18 @@ class AudioCapture(private val context: Context) {
         if (minBufferSize <= 0) return false
 
         val bufferSize = minBufferSize * 2
-        // VOICE_COMMUNICATION (not plain MIC) — this is a hands-free
-        // conversational app with the device's own speaker active during
-        // playback, so echo cancellation/noise suppression matter even
-        // before EPIC-06's barge-in makes them essential.
+        // Headset mic: VOICE_COMMUNICATION is the source that follows the
+        // communication device [HeadsetMicRouter] selected (Bluetooth SCO).
+        // Otherwise VOICE_RECOGNITION: the source Android tunes for speech
+        // recognisers, with minimal processing. VOICE_COMMUNICATION (used
+        // before 2026-11-11) applies call-style noise suppression and AGC
+        // tuned for human ears, which smears the consonants whisper needs.
+        // Its echo cancellation isn't needed while turn-taking is
+        // non-interruptible: the server drops mic audio while the reply
+        // plays (`ws_session.py`). Revisit if EPIC-06 adds barge-in.
         val record = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+            if (headsetMic) MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            else MediaRecorder.AudioSource.VOICE_RECOGNITION,
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,

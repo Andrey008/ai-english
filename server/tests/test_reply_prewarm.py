@@ -97,3 +97,16 @@ def test_end_session_cancels_reply_prewarm():
         return fake
 
     assert asyncio.run(run()).cancelled == 1
+
+
+def test_last_reply_is_the_characters_latest_line():
+    engine = make_engine(FakeOllama(), reply_prewarm=False)
+
+    async def run():
+        engine.start_session("s", system_prompt="PERSONA", opening_message="Hi, I'm Emma!")
+        first = engine.last_reply("s")
+        await reply(engine, "s", "hi")
+        return first, engine.last_reply("s")
+
+    assert asyncio.run(run()) == ("Hi, I'm Emma!", "Sure thing. ")
+    assert engine.last_reply("unknown") is None

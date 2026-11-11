@@ -7,16 +7,31 @@
 
 stt:
   engine: whisper_cpp        # whisper.cpp + Core ML
-  model: medium.en
+  model: large-v3-turbo
   mode: streaming            # 540ms median (poc/results/stt_engine_spike.md)
   # Persistent whisper-server (ADR-0007): binary/model paths are relative
   # to the repo root. Reuses the PoC's whisper.cpp build rather than
   # re-vendoring a multi-GB C++ project under /server — see ADR-0007.
   whisper_server_bin: poc/whisper.cpp/build/bin/whisper-server
-  model_path: poc/whisper.cpp/models/ggml-medium.en.bin
+  model_path: poc/whisper.cpp/models/ggml-large-v3-turbo.bin
+  language: en
   host: 127.0.0.1
   port: 8781
   startup_timeout_s: 60
+  # Measured with bench.stt_eval on 20 recorded lines (2026-11-11):
+  #   medium.en 5.7% WER, 0.74s; + context prompt 4.5%, 0.75s;
+  #   large-v3-turbo 3.3%, 1.14s; + context prompt 3.0%, 1.25s.
+  # large-v3-turbo needs its Core ML encoder
+  # (models/generate-coreml-model.sh large-v3-turbo); medium.en stays as
+  # the fallback.
+  # Pass the character's last reply to whisper as its initial prompt.
+  # Off: on a 23s phone clip it sent large-v3-turbo into a repetition
+  # loop with Chinese text despite -l en, and it made medium.en "fix" the
+  # user's grammar, hiding mistakes a teacher should see (2026-11-11).
+  context_prompt: false
+  # Keep every user utterance in server/data/debug_audio (gitignored:
+  # it's the user's voice). Turn on only for STT evaluation sessions.
+  save_utterances: false
 
 llm:
   provider: ollama
@@ -53,6 +68,16 @@ vad:
   # off mid-thought (STORY-05-11 real-device test).
   silence_cutoff_ms: 1000
   incomplete_hold_ms: 2000
+  # Extra wait, on top of silence_cutoff_ms, before a finished-looking
+  # utterance ends the turn. It is chosen by the session's English level:
+  # lower levels pause longer to find a word. The STT call overlaps it,
+  # and speech resuming cancels it. Costs latency one for one.
+  patience_ms_by_level:
+    A2: 900
+    B1: 700
+    B2: 400
+    C1: 150
+    native: 0
 
 persistence:
   # Relative to repo root, same convention as stt/tts paths above.
