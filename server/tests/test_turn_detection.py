@@ -56,3 +56,14 @@ def test_short_noise_hallucinations_are_dropped():
     assert is_noise_hallucination(NON_SPEECH_MARKER.sub("", "*clicks*").strip(), short)
     assert not is_noise_hallucination("Thank you.", long)  # long enough to be real speech
     assert not is_noise_hallucination("I like snow.", short)
+
+
+def test_trailing_filler_split():
+    from app.stt_service import without_trailing_filler
+
+    assert without_trailing_filler("I'm trying to make it perfect, you know. Thank you.") == \
+        "I'm trying to make it perfect, you know."
+    assert without_trailing_filler("Great, see you. Bye bye!") == "Great, see you."
+    assert without_trailing_filler("Thank you.") is None  # nothing before it: the short-clip filter's job
+    assert without_trailing_filler("It was fine. So.") is None  # "So." is a normal ending
+    assert without_trailing_filler("Thank you for the help.") is None

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -25,6 +26,35 @@ import httpx
 from app.config import resolve_repo_path
 
 logger = logging.getLogger("ai_english.stt")
+
+
+# What whisper "hears" in non-speech: a whole short clip of keyboard
+# clicks becomes "Thank you." (large-v3-turbo, 2026-11-11 phone test).
+NOISE_PHRASES = frozenset({
+    "thank you", "thank you very much", "thanks", "thanks for watching",
+    "thank you for watching", "bye", "bye bye", "you", "so", "okay", "oh",
+    "hmm", "um", "uh",
+})
+# The subset whisper also tacks onto the end of real speech. Kept narrow:
+# "So." or "Okay." closing a real sentence is common.
+TAIL_PHRASES = frozenset({
+    "thank you", "thank you very much", "thanks", "thanks for watching",
+    "thank you for watching", "bye", "bye bye",
+})
+_LAST_SENTENCE = re.compile(r"^(.*[.!?])\s+([^.!?]+[.!?]*)$", re.S)
+
+
+def phrase_key(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z' ]+", " ", text.lower()).split())
+
+
+def without_trailing_filler(text: str) -> str | None:
+    """`text` minus a closing stock filler sentence ("... you know. Thank
+    you."), or None if it doesn't end with one after some real speech."""
+    match = _LAST_SENTENCE.match(text)
+    if match and phrase_key(match.group(2)) in TAIL_PHRASES and phrase_key(match.group(1)):
+        return match.group(1)
+    return None
 
 
 # Whisper's prompt window is 224 tokens; the end of the reply (where its
@@ -96,11 +126,26 @@ class STTService:
         prompt: text that came just before this clip (the character's
         last reply), which biases decoding towards the words in play.
         Raises STTServiceError on failure."""
-        if self._client is None:
-            raise STTServiceError("STT service not started")
         data = {"temperature": "0.0", "response_format": "text"}
         if prompt:
             data["prompt"] = prompt[-PROMPT_MAX_CHARS:]
+        text = " ".join((await self._inference(wav_bytes, data)).split())
+        head = without_trailing_filler(text)
+        if head is not None:
+            # Whisper without timestamps tends to invent a closing "Thank
+            # you." over the trailing silence. Timestamped decoding doesn't,
+            # but loses real words elsewhere (2026-11-11), so it's only used
+            # here, to confirm the tail. A filler that is really spoken
+            # shows up in both passes and is kept.
+            recheck = " ".join((await self._inference(wav_bytes, {**data, "no_timestamps": "false"})).split())
+            if without_trailing_filler(recheck) is None:
+                logger.info("stt_tail_hallucination_trimmed", extra={"tail": text[len(head):].strip()})
+                return head
+        return text
+
+    async def _inference(self, wav_bytes: bytes, data: dict[str, str]) -> str:
+        if self._client is None:
+            raise STTServiceError("STT service not started")
         try:
             resp = await self._client.post(
                 "/inference",

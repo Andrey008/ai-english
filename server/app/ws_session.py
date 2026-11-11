@@ -74,7 +74,7 @@ from app.persona import (
     render_system_prompt,
 )
 from app.session_registry import SessionConflictError
-from app.stt_service import STTServiceError
+from app.stt_service import NOISE_PHRASES, STTServiceError, phrase_key
 from app.tts_service import TTSServiceError, speakable_text
 from app.turn_detection import looks_incomplete
 from app.vad_service import TurnSegmenter
@@ -91,24 +91,18 @@ PLAYBACK_TAIL_MARGIN_S = 0.4
 # whisper.cpp's non-speech markers ("[BLANK_AUDIO]", "(music)", ...).
 NON_SPEECH_MARKER = re.compile(r"\[[^\]]*\]|\([^)]*\)|\*[^*]*\*")
 
-# What large-v3-turbo "hears" in short non-speech noise such as keyboard
-# clicks (2026-11-11 phone test: 1.6s of typing -> "Thank you.").
-# medium.en returned [BLANK_AUDIO] on the same clips. Dropped only when
-# the whole utterance is that short, so a real "Thank you" at the end
-# of a longer sentence is kept.
+# A whole utterance this short that is only a stock filler is noise that
+# whisper "heard" (`stt_service.NOISE_PHRASES`; medium.en returned
+# [BLANK_AUDIO] on the same keyboard clicks). A filler closing longer
+# speech is handled in `STTService.transcribe`.
 HALLUCINATION_MAX_S = 2.5
-_HALLUCINATIONS = frozenset({
-    "thank you", "thank you very much", "thanks", "thanks for watching",
-    "thank you for watching", "bye", "bye bye", "you", "so", "okay", "oh",
-    "hmm", "um", "uh",
-})
 
 
 def is_noise_hallucination(transcript: str, audio_bytes: int) -> bool:
     if audio_bytes / PCM_BYTES_PER_SECOND > HALLUCINATION_MAX_S:
         return False
-    words = re.sub(r"[^a-z' ]+", " ", transcript.lower()).split()
-    return not words or " ".join(words) in _HALLUCINATIONS
+    key = phrase_key(transcript)
+    return not key or key in NOISE_PHRASES
 
 
 DEBUG_AUDIO_DIR = resolve_repo_path("server/data/debug_audio")

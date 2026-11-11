@@ -62,9 +62,9 @@ def peak_normalize(wav: bytes, peak: float = 0.9) -> bytes:
     return header + np.clip(pcm * (peak * 32767 / top), -32768, 32767).astype(np.int16).tobytes()
 
 
-def start_server(model: Path, port: int) -> subprocess.Popen:
-    proc = subprocess.Popen([str(WHISPER_BIN), "-m", str(model), "--host", "127.0.0.1", "--port", str(port), "-nt"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def start_server(model: Path, port: int, timestamps: bool = False) -> subprocess.Popen:
+    args = [str(WHISPER_BIN), "-m", str(model), "--host", "127.0.0.1", "--port", str(port), "-l", "en"]
+    proc = subprocess.Popen(args + ([] if timestamps else ["-nt"]), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         if proc.poll() is not None:
@@ -85,7 +85,7 @@ def transcribe(client: httpx.Client, wav: bytes, prompt: str | None) -> tuple[st
     started = time.perf_counter()
     resp = client.post("/inference", files={"file": ("a.wav", wav, "audio/wav")}, data=data)
     resp.raise_for_status()
-    return NON_SPEECH_MARKER.sub("", resp.text).strip(), time.perf_counter() - started
+    return " ".join(NON_SPEECH_MARKER.sub("", resp.text).split()), time.perf_counter() - started
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -96,6 +96,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--show", action="store_true", help="print every transcript that isn't an exact match")
     ap.add_argument("--normalize", action="store_true", help="also test peak-normalized audio")
     ap.add_argument("--prompt", choices=["both", "yes", "no"], default="both")
+    ap.add_argument("--timestamps", action="store_true",
+                    help="run whisper-server without -nt (timestamped decoding)")
     args = ap.parse_args(argv)
 
     clips = []  # (label, wav bytes, reference, prompt)
@@ -110,7 +112,7 @@ def main(argv: list[str] | None = None) -> None:
     rows = []
     for model in args.model:
         model = model if model.is_absolute() else (REPO_DIR / model if not model.exists() else model)
-        proc = start_server(model, args.port)
+        proc = start_server(model, args.port, args.timestamps)
         try:
             with httpx.Client(base_url=f"http://127.0.0.1:{args.port}", timeout=60) as client:
                 transcribe(client, clips[0][1], None)  # warmup (Core ML / Metal compile)
@@ -128,7 +130,7 @@ def main(argv: list[str] | None = None) -> None:
                         ref_words += len(normalize(ref))
                         if args.show and e:
                             print(f"  [{model.stem} prompt={use_prompt}] {label} ({e}): {text}")
-                    rows.append((model.stem + (" +norm" if normalized else ""), use_prompt, errors / ref_words * 100,
+                    rows.append((model.stem + (" +norm" if normalized else "") + (" +ts" if args.timestamps else ""), use_prompt, errors / ref_words * 100,
                                  statistics.median(latencies), max(latencies)))
         finally:
             proc.terminate()
