@@ -36,6 +36,11 @@ Client -> Server:
   is rebuilt from its turns. Closes with 4404 if there is no such row. A
   plain reconnect with a `session_id` the server no longer holds in memory
   resumes the same way.
+- Interview characters (`session_mode: "interview"`, EPIC-10 / ADR-0016):
+  `session_start` may carry `"interview": {"count": 10, "max_followups": 1,
+  "categories": ["api", ...]}` (all optional, config defaults otherwise).
+  Questions come from the prep base; if it can't be read the server sends
+  `error` and closes with 4503. Scenario and memory are ignored.
 - `{"type": "session_end"}` — clean end, releases the session for good.
 - (binary) mic audio chunks, any size, PCM16/16kHz/mono.
 
@@ -49,6 +54,11 @@ Server -> Client:
   scenario's opening line uses this same shape, sent right after
   `session_ready`/before the first `listening` state, so the client
   doesn't need a separate code path for it)
+- Interview mode only: `session_ready` gets `"interview": {"index", "count",
+  "finished"}`; `{"type": "interview_progress", "index", "count",
+  "finished"}` when the current question changes; `{"type":
+  "interview_finished"}` after the closing line has played — the server
+  then ends the session itself (`session_ended` follows).
 - `{"type": "error", "message": "..."}` — non-fatal unless followed by close.
 - `{"type": "session_ended"}`
 
@@ -70,7 +80,10 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from app.audio_utils import pcm16_to_wav_bytes
 from app.config import resolve_repo_path
-from app.conversation_engine import SENTENCE_END, ConversationEngineError
+from app.interview.builder import InterviewUnavailable, build_interview, interview_options, state_from_rows
+from app.interview.prompts import render_interviewer_prompt
+from app.interview.session import InterviewState
+from app.conversation_engine import ConversationEngineError, split_sentences
 from app.persona import (
     DEFAULT_ENGLISH_LEVEL,
     DEFAULT_SYSTEM_PROMPT,
@@ -156,6 +169,11 @@ def compose_system_prompt(
 ) -> str:
     """Persona (or the default one) + scenario addendum + English level +
     memory of past sessions, in that order."""
+    if preset is not None and preset.session_mode == "interview":
+        # EPIC-10: no proactive contract, no scenario, no memory — the
+        # interviewer has its own template (app/interview/prompts.py).
+        prompt = preset.system_prompt_override or render_interviewer_prompt(preset.name, preset.role_description)
+        return f"{prompt}\n\n{render_level_addendum(english_level)}"
     if preset is not None:
         prompt = preset.system_prompt_override or render_system_prompt(
             preset.name, preset.role_description, preset.correction_style
@@ -224,6 +242,9 @@ async def handle_ws_session(websocket: WebSocket) -> None:
     preset = None
     scenario = None
     resumed = False
+    interview: InterviewState | None = None
+    opening_text: str | None = None  # spoken before the first `listening`
+    interviews = app.state.interviews
     memory_since = None  # resume time: the memory update only reads newer turns
     session_row = await db.get_session(session_id) if requested_session_id else None
     if claim.is_reconnect:
@@ -235,6 +256,8 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             preset = app.state.preset_store.get(session_row["character_id"])
         english_level = _level((session_row or {}).get("english_level"))
         use_memory = None
+        if preset is not None and preset.session_mode == "interview":
+            interview = interviews.get(session_id)
     else:
         resumed = session_row is not None
         row = session_row or {}
@@ -244,7 +267,8 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             if preset is None:
                 logger.warning("ws_unknown_character_id", extra={"character_id": character_id})
 
-        scenario_id = row.get("scenario_id") if resumed else first.get("scenario_id")
+        is_interview = preset is not None and preset.session_mode == "interview"
+        scenario_id = None if is_interview else (row.get("scenario_id") if resumed else first.get("scenario_id"))
         if scenario_id:
             scenario = app.state.scenario_store.get(scenario_id)
             if scenario is None:
@@ -259,7 +283,7 @@ async def handle_ws_session(websocket: WebSocket) -> None:
         stored_memory = row.get("use_memory")
         use_memory = first.get("use_memory", True if stored_memory is None else bool(stored_memory)) is not False
         memory_summary = None
-        if preset is not None and preset.memory_enabled and use_memory:
+        if preset is not None and preset.memory_enabled and use_memory and not is_interview:
             memory = await db.get_character_memory(preset.id)
             memory_summary = memory.get("rolling_summary") if memory else None
 
@@ -267,6 +291,12 @@ async def handle_ws_session(websocket: WebSocket) -> None:
         if resumed:
             turns = await db.get_transcript(session_id)
             restored, mode = conversation_engine.restore_history(system_prompt, turns, row.get("summary"))
+            if is_interview and (rows := await db.get_interview_items(session_id)):
+                interview = state_from_rows(
+                    preset.name, rows, interview_options(app.state.config, first.get("interview"))["max_followups"]
+                )
+                opening_text = interview.resume_line()
+                restored = restored + [{"role": "assistant", "content": opening_text}]
             conversation_engine.start_session(
                 session_id, system_prompt=system_prompt, restored=restored if len(restored) > 1 else None
             )
@@ -277,10 +307,24 @@ async def handle_ws_session(websocket: WebSocket) -> None:
                 extra={"session_id": session_id, "mode": mode, "turns": len(turns), "messages": len(restored) - 1},
             )
         else:
+            if is_interview:
+                try:
+                    interview = await build_interview(
+                        app, preset.name, interview_options(app.state.config, first.get("interview"))
+                    )
+                except InterviewUnavailable as exc:
+                    logger.warning("interview_unavailable", extra={"session_id": session_id, "error": str(exc)})
+                    registry.end(session_id)
+                    await websocket.send_json({"type": "error", "message": f"interview unavailable: {exc}"})
+                    await websocket.close(code=4503)
+                    return
+                opening_text = interview.opening()
+            elif scenario is not None:
+                opening_text = scenario.opening_line_hint
             conversation_engine.start_session(
                 session_id,
                 system_prompt=system_prompt,
-                opening_message=scenario.opening_line_hint if scenario else None,
+                opening_message=opening_text,
             )
             await db.create_session(
                 session_id,
@@ -289,6 +333,9 @@ async def handle_ws_session(websocket: WebSocket) -> None:
                 english_level=english_level,
                 use_memory=use_memory,
             )
+            if interview is not None:
+                interview.take_changes()
+                await db.create_interview_items(session_id, [i.as_row() for i in interview.items])
 
     logger.info(
         "ws_session_started",
@@ -301,14 +348,18 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             "turn_patience_s": turn_patience_s(app.state.config, english_level),
         },
     )
-    await websocket.send_json(
-        {
-            "type": "session_ready",
-            "proto_version": PROTO_VERSION,
-            "session_id": session_id,
-            "reconnected": claim.is_reconnect,
-        }
-    )
+    if interview is not None:
+        interviews[session_id] = interview
+        await _save_interview_changes(db, session_id, interview)
+    ready = {
+        "type": "session_ready",
+        "proto_version": PROTO_VERSION,
+        "session_id": session_id,
+        "reconnected": claim.is_reconnect,
+    }
+    if interview is not None:
+        ready["interview"] = _interview_progress(interview)
+    await websocket.send_json(ready)
 
     segmenter = TurnSegmenter(app.state.config)
     voice_id = preset.tts_voice_id if preset else None
@@ -328,6 +379,8 @@ async def handle_ws_session(websocket: WebSocket) -> None:
     save_utterances = bool(app.state.config["stt"].get("save_utterances", False))
     pending_audio = bytearray()
     decide_task: asyncio.Task | None = None
+    finish_requested = asyncio.Event()
+    finish_waiter: asyncio.Future | None = None
 
     async def decide_turn() -> None:
         try:
@@ -387,11 +440,17 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             await _handle_turn(
                 websocket, session_id, utterance,
                 conversation_engine, stt_service, tts_service, db,
-                voice_id, clock, transcript=transcript, held=held,
+                voice_id, clock, transcript=transcript, held=held, interview=interview,
             )
             # The turn task stays alive (so mic audio keeps being
             # dropped) until the phone has actually finished speaking.
             await clock.wait_drained()
+            if interview is not None and interview.finished:
+                # The closing line has been spoken: end the session the
+                # same way a client `session_end` would (next loop pass).
+                finish_requested.set()
+                await websocket.send_json({"type": "interview_finished"})
+                return
             await websocket.send_json({"type": "session_state", "state": "listening"})
         except asyncio.CancelledError:
             raise
@@ -405,19 +464,33 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             segmenter.reset()
 
     try:
-        if scenario is not None and not resumed:
+        if opening_text and not claim.is_reconnect:
             await websocket.send_json({"type": "session_state", "state": "speaking"})
-            await _speak_text(websocket, tts_service, session_id, scenario.opening_line_hint, voice_id, clock)
-            await db.add_turn(session_id, "assistant", scenario.opening_line_hint)
+            await _speak_text(websocket, tts_service, session_id, opening_text, voice_id, clock)
+            await db.add_turn(session_id, "assistant", opening_text,
+                              question_idx=interview.index if interview is not None else None)
             await clock.wait_drained()
             segmenter.reset()
+        if interview is not None and interview.finished:
+            finish_requested.set()  # resumed an interview with nothing left to ask
+            await websocket.send_json({"type": "interview_finished"})
         await websocket.send_json({"type": "session_state", "state": "listening"})
         # The client mic streams continuously, so a gap in inbound frames
         # means the network path stalled — logged to pin down the
         # unexplained client-side reconnects (STORY-05-11).
         last_frame_at = time.monotonic()
+        finish_waiter = asyncio.ensure_future(finish_requested.wait())
         while True:
-            message = await websocket.receive()
+            # Wait for a frame *or* the interview's own end, so a client
+            # that sends nothing (e.g. muted) can't hold a finished
+            # interview open.
+            receive_task = asyncio.ensure_future(websocket.receive())
+            await asyncio.wait({receive_task, finish_waiter}, return_when=asyncio.FIRST_COMPLETED)
+            if finish_requested.is_set():
+                receive_task.cancel()
+                clean_end = True
+                break
+            message = receive_task.result()
             if message["type"] == "websocket.disconnect":
                 logger.info(
                     "ws_client_disconnect",
@@ -471,6 +544,8 @@ async def handle_ws_session(websocket: WebSocket) -> None:
         except Exception:
             pass
     finally:
+        if finish_waiter is not None:
+            finish_waiter.cancel()
         if decide_task is not None and not decide_task.done():
             decide_task.cancel()
         if turn_task is not None and not turn_task.done():
@@ -480,6 +555,7 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             except (asyncio.CancelledError, Exception):
                 pass
         if clean_end:
+            interviews.pop(session_id, None)
             registry.end(session_id)
             history = conversation_engine.history(session_id)
             conversation_engine.end_session(session_id)
@@ -564,25 +640,23 @@ async def _speak_text(websocket, tts_service, session_id, text, voice_id, clock=
     """Split already-known static text (a scenario's opening line, not a
     live LLM stream) into the same sentence-chunked TTS shape as a normal
     reply, so the client needs no separate code path for it."""
-    sentences = []
-    buf = text
-    match = SENTENCE_END.search(buf)
-    while match:
-        sentences.append(buf[: match.end()].strip())
-        buf = buf[match.end() :]
-        match = SENTENCE_END.search(buf)
-    if buf.strip():
-        sentences.append(buf.strip())
+    for i, sentence in enumerate(split_sentences(text)):
+        await _speak_sentence(websocket, tts_service, session_id, sentence, i, voice_id, clock)
 
-    for i, sentence in enumerate(sentences):
-        if sentence:
-            await _speak_sentence(websocket, tts_service, session_id, sentence, i, voice_id, clock)
+
+def _interview_progress(interview: InterviewState) -> dict:
+    return {"index": interview.index, "count": interview.count, "finished": interview.finished}
+
+
+async def _save_interview_changes(db, session_id: str, interview: InterviewState) -> None:
+    for item in interview.take_changes():
+        await db.set_interview_item_status(session_id, item.idx, item.status)
 
 
 async def _handle_turn(
     websocket, session_id, utterance_pcm, conversation_engine, stt_service, tts_service, db,
     voice_id=None, clock: PlaybackClock | None = None,
-    transcript: str | None = None, held: bool = False,
+    transcript: str | None = None, held: bool = False, interview: InterviewState | None = None,
 ) -> None:
     """`transcript` is passed in when the smart-turn decision already ran
     STT on this utterance; timings are then relative to the decision,
@@ -603,15 +677,38 @@ async def _handle_turn(
         return
 
     await websocket.send_json({"type": "transcript_final", "text": transcript})
-    await db.add_turn(session_id, "user", transcript)
+    plan = interview.plan_turn(transcript) if interview is not None else None
+    await db.add_turn(session_id, "user", transcript, question_idx=plan.question_idx if plan else None)
     await websocket.send_json({"type": "session_state", "state": "speaking"})
     t_stt = time.monotonic()
     t_first_sentence = t_first_audio = None
 
+    if plan is not None and plan.kind == "scripted":
+        # Interview: skip / repeat, or "okay" + next question — no LLM.
+        await _speak_text(websocket, tts_service, session_id, plan.scripted_text, voice_id, clock)
+        await conversation_engine.append_exchange(session_id, transcript, plan.scripted_text)
+        await db.add_turn(session_id, "assistant", plan.scripted_text, question_idx=interview.index)
+        await _after_interview_turn(websocket, db, session_id, interview, plan)
+        logger.info("ws_turn_timing", extra={
+            "session_id": session_id, "interview_command": plan.command or "ack_next",
+            "interview_index": interview.index,
+            "turn_total_s": round(time.monotonic() - t0, 3), "user_words": len(transcript.split()),
+        })
+        return
+
+    llm_text = plan.llm_text if plan is not None else transcript
+    model_reply: list[str] = []
+
+    def reply_suffix(reply: str) -> str | None:
+        model_reply.append(reply)
+        return interview.finish_reply(plan, reply)
+
     try:
         sentence_index = 0
         full_reply = ""
-        async for event in conversation_engine.generate_reply(session_id, transcript):
+        async for event in conversation_engine.generate_reply(
+            session_id, llm_text, reply_suffix=reply_suffix if plan is not None else None
+        ):
             if event["type"] in ("done", "cancelled"):
                 full_reply = event.get("full_text", "")
                 continue
@@ -629,7 +726,10 @@ async def _handle_turn(
                 t_first_audio = sent_at
             sentence_index += 1
         if full_reply.strip():
-            await db.add_turn(session_id, "assistant", full_reply)
+            await db.add_turn(session_id, "assistant", full_reply,
+                              question_idx=interview.index if interview is not None else None)
+        if plan is not None:
+            await _after_interview_turn(websocket, db, session_id, interview, plan)
         # Per-turn latency breakdown, all relative to VAD speech_end
         # (excludes the VAD silence cutoff itself and network transit).
         since = lambda t: round(t - t0, 3) if t is not None else None  # noqa: E731
@@ -646,8 +746,16 @@ async def _handle_turn(
                 "sentences": sentence_index,
                 "user_words": len(transcript.split()),
                 "reply_words": len(full_reply.split()),
+                **({"interview_index": interview.index, "interview_command": plan.command,
+                    "followups_used": interview.followups_used} if plan is not None else {}),
             },
         )
     except ConversationEngineError as exc:
         logger.warning("ws_turn_llm_failed", extra={"session_id": session_id, "error": str(exc)})
         await websocket.send_json({"type": "error", "message": f"generation failed: {exc}"})
+
+
+async def _after_interview_turn(websocket, db, session_id: str, interview: InterviewState, plan) -> None:
+    await _save_interview_changes(db, session_id, interview)
+    if interview.index != plan.question_idx or interview.finished:
+        await websocket.send_json({"type": "interview_progress", **_interview_progress(interview)})

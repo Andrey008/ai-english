@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
     app.state.claude_gateway = ClaudeGateway(config)
     app.state.prep_client = PrepClient(config)
     app.state.background_tasks = set()
+    app.state.interviews = {}  # session_id → InterviewState (survives a reconnect)
 
     async def translate_prep_questions() -> None:
         """EPIC-10: fill the RU→EN question cache in the background.

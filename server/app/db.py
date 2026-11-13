@@ -111,11 +111,14 @@ class Database:
         )
         await self._conn.commit()
 
-    async def add_turn(self, session_id: str, role: str, text: str, audio_ref: str | None = None) -> None:
+    async def add_turn(
+        self, session_id: str, role: str, text: str, audio_ref: str | None = None, question_idx: int | None = None
+    ) -> None:
+        """`question_idx`: the interview question this turn belongs to (EPIC-10)."""
         assert self._conn is not None
         await self._conn.execute(
-            "INSERT INTO turns (id, session_id, role, text, audio_ref, ts) VALUES (?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), session_id, role, text, audio_ref, _now()),
+            "INSERT INTO turns (id, session_id, role, text, audio_ref, ts, question_idx) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), session_id, role, text, audio_ref, _now(), question_idx),
         )
         await self._conn.commit()
 
@@ -123,7 +126,7 @@ class Database:
         """`since` (an ISO timestamp) limits it to turns after that moment."""
         assert self._conn is not None
         cursor = await self._conn.execute(
-            "SELECT role, text, ts FROM turns WHERE session_id = ? AND ts > ? ORDER BY ts ASC",
+            "SELECT role, text, ts, question_idx FROM turns WHERE session_id = ? AND ts > ? ORDER BY ts ASC",
             (session_id, since or ""),
         )
         rows = await cursor.fetchall()
@@ -172,6 +175,7 @@ class Database:
     async def delete_session(self, session_id: str) -> bool:
         assert self._conn is not None
         await self._conn.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
+        await self._conn.execute("DELETE FROM interview_items WHERE session_id = ?", (session_id,))
         cursor = await self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         await self._conn.commit()
         return cursor.rowcount > 0
@@ -227,3 +231,49 @@ class Database:
             [(qid, sha, text, model, now) for qid, sha, text in rows],
         )
         await self._conn.commit()
+
+    async def create_interview_items(self, session_id: str, items: list[dict]) -> None:
+        """items: dicts with idx, question_id, category, question_ru, question_en, status."""
+        assert self._conn is not None
+        await self._conn.execute("DELETE FROM interview_items WHERE session_id = ?", (session_id,))
+        await self._conn.executemany(
+            """
+            INSERT INTO interview_items (session_id, idx, question_id, category, question_ru, question_en, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [(session_id, i["idx"], i["question_id"], i.get("category"), i["question_ru"], i["question_en"],
+              i.get("status", "pending")) for i in items],
+        )
+        await self._conn.commit()
+
+    async def get_interview_items(self, session_id: str) -> list[dict]:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT * FROM interview_items WHERE session_id = ? ORDER BY idx", (session_id,)
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def set_interview_item_status(self, session_id: str, idx: int, status: str) -> None:
+        assert self._conn is not None
+        await self._conn.execute(
+            "UPDATE interview_items SET status = ? WHERE session_id = ? AND idx = ?", (status, session_id, idx)
+        )
+        await self._conn.commit()
+
+    async def recent_interview_question_ids(self, sessions: int) -> set[str]:
+        """Question ids asked in the `sessions` most recent interviews."""
+        assert self._conn is not None
+        if sessions <= 0:
+            return set()
+        cursor = await self._conn.execute(
+            """
+            SELECT i.question_id FROM interview_items i
+            WHERE i.status != 'pending' AND i.session_id IN (
+                SELECT s.id FROM sessions s
+                WHERE EXISTS (SELECT 1 FROM interview_items x WHERE x.session_id = s.id)
+                ORDER BY s.started_at DESC LIMIT ?
+            )
+            """,
+            (sessions,),
+        )
+        return {row["question_id"] for row in await cursor.fetchall()}

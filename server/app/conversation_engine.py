@@ -12,6 +12,7 @@ import logging
 import math
 import re
 import time
+from collections.abc import Callable
 from typing import Any, AsyncIterator
 
 import ollama
@@ -21,6 +22,21 @@ from app.persona import DEFAULT_SYSTEM_PROMPT
 logger = logging.getLogger("ai_english.conversation")
 
 SENTENCE_END = re.compile(r"[.!?]+[\"')\]]?\s")
+
+
+def split_sentences(text: str) -> list[str]:
+    """Static text → sentences, the same boundaries a streamed reply gets."""
+    sentences = []
+    buf = text
+    match = SENTENCE_END.search(buf)
+    while match:
+        if sentence := buf[: match.end()].strip():
+            sentences.append(sentence)
+        buf = buf[match.end():]
+        match = SENTENCE_END.search(buf)
+    if buf.strip():
+        sentences.append(buf.strip())
+    return sentences
 
 _SYSTEM_SLOT = "{{ if .System }}{{ .System }}"
 
@@ -139,6 +155,13 @@ class ConversationEngine:
             # Not cancelled by the first user turn (unlike the reply
             # prewarm): Ollama runs one request at a time, so that turn
             # queues behind this one and then hits the cache.
+            coro = self._prewarm_history(session_id, list(history))
+        elif opening_message:
+            # System prompt + the line the character opens with (scenario
+            # opening, interview first question): cached as a whole, the
+            # way the reply prewarm caches a reply, so the first user turn
+            # is a strict extension. With only the prompt head cached the
+            # first interview reply took 5.0-5.3s (2026-11-13 live check).
             coro = self._prewarm_history(session_id, list(history))
         elif self._prompt_head is not None:
             coro = self._prewarm(session_id, self._prompt_head + history[0]["content"])
@@ -261,6 +284,20 @@ class ConversationEngine:
                 return message["content"]
         return None
 
+    async def append_exchange(self, session_id: str, user_text: str, assistant_text: str) -> None:
+        """Record a user line and a reply the server spoke without the LLM
+        (interview commands: skip / repeat). Appending keeps the history a
+        strict extension of what Ollama has cached, and the reply prewarm
+        then caches it for the next turn."""
+        await self._cancel_reply_prewarm(session_id)
+        await self._defer_compaction(session_id)
+        history = self._histories.setdefault(
+            session_id, [{"role": "system", "content": DEFAULT_SYSTEM_PROMPT}]
+        )
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": assistant_text})
+        self._start_reply_prewarm(session_id, history)
+
     def end_session(self, session_id: str) -> None:
         for tasks in (self._compaction_tasks, self._reply_prewarm_tasks):
             task = tasks.pop(session_id, None)
@@ -272,10 +309,18 @@ class ConversationEngine:
         self._pending_summaries.pop(session_id, None)
         logger.info("conversation_session_ended", extra={"session_id": session_id})
 
-    async def generate_reply(self, session_id: str, user_text: str) -> AsyncIterator[dict]:
+    async def generate_reply(
+        self, session_id: str, user_text: str, reply_suffix: Callable[[str], str | None] | None = None
+    ) -> AsyncIterator[dict]:
         """Yields {"type": "sentence", "text": ...} as sentences complete,
         then a final {"type": "done", "full_text": ...}. Raises
         ConversationEngineError on an unreachable/failing Ollama backend.
+
+        `reply_suffix` (interview mode, EPIC-10) gets the model's full reply
+        and may return text the server says right after it — e.g. the next
+        question, verbatim. It is yielded as more sentences and stored as
+        part of the same assistant message, so the history (and the reply
+        prewarm) matches exactly what was spoken.
         """
         await self._cancel_reply_prewarm(session_id)
         await self._defer_compaction(session_id)
@@ -330,6 +375,11 @@ class ConversationEngine:
 
         if buf.strip():
             yield {"type": "sentence", "text": buf.strip()}
+        suffix = reply_suffix(full_reply) if reply_suffix is not None else None
+        if suffix:
+            for sentence in split_sentences(suffix):
+                yield {"type": "sentence", "text": sentence}
+            full_reply = f"{full_reply.rstrip()} {suffix}".strip()
         history.append({"role": "assistant", "content": full_reply})
         self._maybe_start_compaction(session_id)
         if session_id not in self._compaction_tasks:  # its summary request already extends this history

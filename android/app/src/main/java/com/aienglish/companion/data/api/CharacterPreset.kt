@@ -20,6 +20,9 @@ data class CharacterPreset(
     val temperature: Double = 0.7,
     @SerialName("correction_style") val correctionStyle: CorrectionStyle = CorrectionStyle.OFF,
     @SerialName("memory_enabled") val memoryEnabled: Boolean = true,
+    /** "conversation" | "interview" (EPIC-10). Kept so editing an
+     * interviewer in the app doesn't reset it to a normal character. */
+    @SerialName("session_mode") val sessionMode: String = "conversation",
 )
 
 @Serializable
