@@ -50,6 +50,11 @@ llm:
   compaction:
     trigger_tokens: 5000
     keep_recent_messages: 6
+    # Continuing a past conversation (ADR-0015): above this, it resumes as
+    # persona + saved notes + recent messages instead of the whole history.
+    # The history is prefilled cold at session start (~135 tok/s: 1.7K
+    # tokens took 12.8s), so this is far below trigger_tokens.
+    resume_tokens: 1500
 
 tts:
   engine: piper               # default — ~0.6s/chunk

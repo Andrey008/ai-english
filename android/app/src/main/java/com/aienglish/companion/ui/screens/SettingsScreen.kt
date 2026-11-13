@@ -4,15 +4,29 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material3.Button
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -25,13 +39,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.aienglish.companion.BuildConfig
 import com.aienglish.companion.R
+import com.aienglish.companion.data.Appearance
 import com.aienglish.companion.data.EnglishLevel
+import com.aienglish.companion.data.ThemeMode
 import com.aienglish.companion.ui.LocalAppContainer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -70,10 +88,12 @@ private suspend fun testConnection(host: String, port: Int): ConnectionTestResul
     }
 }
 
-/** Editable server connection config (supersedes STORY-05-01's first-run-only
- * entry) plus app version info. Per-character memory reset lives on the
+/** Appearance (light/dark theme, wallpaper colors), default English level,
+ * editable server connection config (supersedes STORY-05-01's first-run-only
+ * entry) and app version info. Per-character memory reset lives on the
  * Character Creator/edit screen instead (STORY-05-10) — it needs a specific
  * character in context, which this screen doesn't have. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen() {
     val appContainer = LocalAppContainer.current
@@ -90,6 +110,7 @@ fun SettingsScreen() {
 
     val sessionActive by appContainer.wsSessionClient.sessionActiveFlow.collectAsState()
     val defaultLevel by appContainer.englishLevelStore.defaultLevelFlow.collectAsState(initial = EnglishLevel.DEFAULT)
+    val appearance by appContainer.appearanceStore.appearanceFlow.collectAsState(initial = Appearance())
 
     var saving by remember { mutableStateOf(false) }
     var saveMessage by remember { mutableStateOf<String?>(null) }
@@ -117,85 +138,122 @@ fun SettingsScreen() {
         }
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+    Scaffold(topBar = { LargeTopAppBar(title = { Text("Settings") }) }) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            SettingsCard(title = "Appearance", icon = Icons.Default.Palette) {
+                Text("Theme", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(bottom = 8.dp))
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    ThemeMode.entries.forEachIndexed { index, mode ->
+                        SegmentedButton(
+                            selected = appearance.themeMode == mode,
+                            onClick = { scope.launch { appContainer.appearanceStore.setThemeMode(mode) } },
+                            shape = SegmentedButtonDefaults.itemShape(index, ThemeMode.entries.size),
+                            icon = {},
+                        ) { Text(mode.label) }
+                    }
+                }
+                SwitchRow(
+                    title = "Wallpaper colors",
+                    subtitle = "Take the app's colors from your wallpaper instead of its own palette.",
+                    checked = appearance.wallpaperColors,
+                    onCheckedChange = { enabled -> scope.launch { appContainer.appearanceStore.setWallpaperColors(enabled) } },
+                )
+            }
+
+            SettingsCard(title = "Your English level", icon = Icons.Default.School) {
+                Text(
+                    "Preselected for every new conversation — characters keep their words and sentences at this level. You can still change it per conversation.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 12.dp),
+                )
+                EnglishLevelPicker(
+                    selected = defaultLevel,
+                    onSelect = { level -> scope.launch { appContainer.englishLevelStore.setDefault(level) } },
+                )
+            }
+
+            SettingsCard(title = "Server connection", icon = Icons.Default.Dns) {
+                if (sessionActive) {
+                    Text(
+                        "A conversation is active — end it before changing the server address.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(bottom = 12.dp),
+                    )
+                }
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    label = { Text("Host") },
+                    singleLine = true,
+                    enabled = !sessionActive,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                )
+                OutlinedTextField(
+                    value = portText,
+                    onValueChange = { portText = it.filter(Char::isDigit) },
+                    label = { Text("Port") },
+                    singleLine = true,
+                    enabled = !sessionActive,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(
+                        onClick = { save() },
+                        enabled = !sessionActive && !saving && host.isNotBlank() && portText.isNotBlank(),
+                    ) {
+                        if (saving) CircularProgressIndicator(modifier = Modifier.size(20.dp)) else Text("Save")
+                    }
+                    OutlinedButton(
+                        onClick = { test() },
+                        enabled = !testing && host.isNotBlank() && portText.isNotBlank(),
+                    ) {
+                        Text(if (testing) "Testing…" else "Test connection")
+                    }
+                }
+                saveMessage?.let {
+                    Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
+                }
+                testResult?.let { result ->
+                    val (message, color) = when (result) {
+                        is ConnectionTestResult.Reachable -> "Reachable." to MaterialTheme.colorScheme.primary
+                        is ConnectionTestResult.Unreachable -> "Unreachable: ${result.reason}" to MaterialTheme.colorScheme.error
+                    }
+                    Text(message, style = MaterialTheme.typography.bodyMedium, color = color, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+
+            SettingsCard(title = "About", icon = Icons.Default.Info) {
+                Text(
+                    "${stringResource(R.string.app_name)} ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsCard(title: String, icon: ImageVector, content: @Composable ColumnScope.() -> Unit) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
-        Text("Settings", style = MaterialTheme.typography.headlineMedium)
-
-        Text(
-            "Server connection",
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp),
-        )
-        if (sessionActive) {
-            Text(
-                "A voice session is active — end it before changing the server address.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(bottom = 12.dp),
-            )
-        }
-        OutlinedTextField(
-            value = host,
-            onValueChange = { host = it },
-            label = { Text("Host") },
-            singleLine = true,
-            enabled = !sessionActive,
-            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-        )
-        OutlinedTextField(
-            value = portText,
-            onValueChange = { portText = it.filter(Char::isDigit) },
-            label = { Text("Port") },
-            singleLine = true,
-            enabled = !sessionActive,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(
-                onClick = { save() },
-                enabled = !sessionActive && !saving && host.isNotBlank() && portText.isNotBlank(),
-            ) {
-                if (saving) CircularProgressIndicator(modifier = Modifier.size(20.dp)) else Text("Save")
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 12.dp)) {
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 12.dp))
             }
-            OutlinedButton(
-                onClick = { test() },
-                enabled = !testing && host.isNotBlank() && portText.isNotBlank(),
-            ) {
-                Text(if (testing) "Testing…" else "Test connection")
-            }
+            content()
         }
-        saveMessage?.let {
-            Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
-        }
-        testResult?.let { result ->
-            val (message, color) = when (result) {
-                is ConnectionTestResult.Reachable -> "Reachable." to MaterialTheme.colorScheme.primary
-                is ConnectionTestResult.Unreachable -> "Unreachable: ${result.reason}" to MaterialTheme.colorScheme.error
-            }
-            Text(message, style = MaterialTheme.typography.bodyMedium, color = color, modifier = Modifier.padding(top = 8.dp))
-        }
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
-
-        Text("Your English level", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 4.dp))
-        Text(
-            "Preselected for every new session — characters keep their words and sentences at this level. You can still change it per session.",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(bottom = 8.dp),
-        )
-        EnglishLevelPicker(
-            selected = defaultLevel,
-            onSelect = { level -> scope.launch { appContainer.englishLevelStore.setDefault(level) } },
-        )
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
-
-        Text("About", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 8.dp))
-        Text(
-            "${stringResource(R.string.app_name)} ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-            style = MaterialTheme.typography.bodyMedium,
-        )
     }
 }

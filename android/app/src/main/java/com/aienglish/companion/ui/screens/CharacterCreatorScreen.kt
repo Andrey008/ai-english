@@ -18,6 +18,11 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -49,7 +54,7 @@ import kotlinx.coroutines.launch
  * "expected unused in practice" per `presets.py`). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CharacterCreatorScreen(characterId: String?, onDone: () -> Unit) {
+fun CharacterCreatorScreen(characterId: String?, onDone: () -> Unit, onOpenGuide: () -> Unit = {}) {
     val appContainer = LocalAppContainer.current
     val scope = rememberCoroutineScope()
     val isEdit = characterId != null
@@ -144,7 +149,20 @@ fun CharacterCreatorScreen(characterId: String?, onDone: () -> Unit) {
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text(if (isEdit) "Edit character" else "Create character") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text(if (isEdit) "Edit character" else "Create character") },
+                navigationIcon = {
+                    IconButton(onClick = onDone) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                },
+                actions = {
+                    TextButton(onClick = onOpenGuide) {
+                        Icon(Icons.AutoMirrored.Filled.HelpOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("Guide", modifier = Modifier.padding(start = 6.dp))
+                    }
+                },
+            )
+        },
     ) { padding ->
         if (loading) {
             Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {

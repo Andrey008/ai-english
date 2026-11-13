@@ -60,7 +60,14 @@ class Database:
             await self._conn.commit()
             logger.info("migration_applied", extra={"migration_file": path.name})
 
-    async def create_session(self, session_id: str, character_id: str | None = None, scenario_id: str | None = None) -> None:
+    async def create_session(
+        self,
+        session_id: str,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+        english_level: str | None = None,
+        use_memory: bool = True,
+    ) -> None:
         """Upsert, not a plain insert: `SessionRegistry.try_claim` reuses
         the client-requested `session_id` even for a brand-new session
         (e.g. reconnecting after a server restart, once the in-memory
@@ -71,20 +78,30 @@ class Database:
         client reconnect verification. Upserting starts the row fresh
         (clears `ended_at`, updates the rest) exactly like a real new
         session should look, whether or not that id happens to be reused.
+        (Since ADR-0015 such a reconnect resumes the existing row instead,
+        so the conflict branch is a fallback only.)
         """
         assert self._conn is not None
         await self._conn.execute(
             """
-            INSERT INTO sessions (id, character_id, started_at, ended_at, scenario_id)
-            VALUES (?, ?, ?, NULL, ?)
+            INSERT INTO sessions (id, character_id, started_at, ended_at, scenario_id, english_level, use_memory)
+            VALUES (?, ?, ?, NULL, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 character_id = excluded.character_id,
                 started_at = excluded.started_at,
                 ended_at = NULL,
-                scenario_id = excluded.scenario_id
+                scenario_id = excluded.scenario_id,
+                english_level = excluded.english_level,
+                use_memory = excluded.use_memory
             """,
-            (session_id, character_id, _now(), scenario_id),
+            (session_id, character_id, _now(), scenario_id, english_level, int(use_memory)),
         )
+        await self._conn.commit()
+
+    async def reopen_session(self, session_id: str) -> None:
+        """A resumed conversation (ADR-0015) is live again until its next end."""
+        assert self._conn is not None
+        await self._conn.execute("UPDATE sessions SET ended_at = NULL WHERE id = ?", (session_id,))
         await self._conn.commit()
 
     async def end_session(self, session_id: str) -> None:
@@ -102,13 +119,62 @@ class Database:
         )
         await self._conn.commit()
 
-    async def get_transcript(self, session_id: str) -> list[dict]:
+    async def get_transcript(self, session_id: str, since: str | None = None) -> list[dict]:
+        """`since` (an ISO timestamp) limits it to turns after that moment."""
         assert self._conn is not None
         cursor = await self._conn.execute(
-            "SELECT role, text, ts FROM turns WHERE session_id = ? ORDER BY ts ASC", (session_id,)
+            "SELECT role, text, ts FROM turns WHERE session_id = ? AND ts > ? ORDER BY ts ASC",
+            (session_id, since or ""),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def list_conversations(self) -> list[dict]:
+        """Sessions with at least one user turn, most recently active first.
+        `topic` is the first user line, for rows without a wrap-up title."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            """
+            SELECT s.id, s.character_id, s.scenario_id, s.english_level, s.started_at, s.ended_at, s.title,
+                   COUNT(t.id) AS turns,
+                   SUM(t.role = 'user') AS user_turns,
+                   MAX(t.ts) AS last_turn_at,
+                   (SELECT u.text FROM turns u WHERE u.session_id = s.id AND u.role = 'user'
+                    ORDER BY u.ts LIMIT 1) AS topic
+            FROM sessions s JOIN turns t ON t.session_id = s.id
+            GROUP BY s.id
+            HAVING user_turns > 0
+            ORDER BY last_turn_at DESC
+            """
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def save_wrap_up(self, session_id: str, title: str | None, summary: str | None, summary_turns: int) -> None:
+        """A new title replaces the old one unless the user set it by hand;
+        a summary is only written when there is one."""
+        assert self._conn is not None
+        new_title = "CASE WHEN title_edited THEN title ELSE COALESCE(?, title) END"
+        if summary:
+            await self._conn.execute(
+                f"UPDATE sessions SET title = {new_title}, summary = ?, summary_turns = ? WHERE id = ?",
+                (title, summary, summary_turns, session_id),
+            )
+        else:
+            await self._conn.execute(f"UPDATE sessions SET title = {new_title} WHERE id = ?", (title, session_id))
+        await self._conn.commit()
+
+    async def rename_session(self, session_id: str, title: str) -> bool:
+        assert self._conn is not None
+        cursor = await self._conn.execute("UPDATE sessions SET title = ?, title_edited = 1 WHERE id = ?", (title, session_id))
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_session(self, session_id: str) -> bool:
+        assert self._conn is not None
+        await self._conn.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
+        cursor = await self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        await self._conn.commit()
+        return cursor.rowcount > 0
 
     async def get_session(self, session_id: str) -> dict | None:
         assert self._conn is not None

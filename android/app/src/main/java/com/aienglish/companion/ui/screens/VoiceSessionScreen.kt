@@ -1,39 +1,42 @@
 package com.aienglish.companion.ui.screens
 
-import android.Manifest
-import android.content.Intent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,91 +44,33 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.aienglish.companion.data.EnglishLevel
-import com.aienglish.companion.data.api.ApiResult
-import com.aienglish.companion.data.api.ScenarioDefinition
 import com.aienglish.companion.data.ws.SessionPhase
 import com.aienglish.companion.data.ws.WsEvent
-import com.aienglish.companion.service.VoiceSessionForegroundService
 import com.aienglish.companion.ui.LocalAppContainer
-import kotlinx.coroutines.launch
+import com.aienglish.companion.ui.components.Avatar
+import com.aienglish.companion.ui.components.ChatActivity
+import com.aienglish.companion.ui.components.ChatTranscript
 
-private sealed class TranscriptEntry {
-    data class User(val text: String) : TranscriptEntry()
-    data class Character(val text: String) : TranscriptEntry()
-}
-
+/** The running conversation, full screen like a call (ADR-0015). Started
+ * from the new-conversation screen or a past conversation's Continue
+ * ([com.aienglish.companion.service.VoiceSessionLauncher]); [onClose]
+ * goes back to the conversation list. Leaving with back keeps the
+ * session running in the foreground service — the list then offers to
+ * return here. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun VoiceSessionScreen() {
+fun VoiceSessionScreen(onClose: () -> Unit) {
     val appContainer = LocalAppContainer.current
     val context = LocalContext.current
 
-    val selectedCharacterId by appContainer.characterSelectionStore.selectedIdFlow.collectAsState(initial = null)
-    var characterName by remember { mutableStateOf("Character") }
-
-    var scenarios by remember { mutableStateOf<List<ScenarioDefinition>>(emptyList()) }
-    var selectedScenarioId by remember { mutableStateOf<String?>(null) }
-
-    // Per-session choices: the level starts from the Settings default and
-    // re-syncs if that changes; neither is written back from here.
-    val defaultLevel by appContainer.englishLevelStore.defaultLevelFlow.collectAsState(initial = EnglishLevel.DEFAULT)
-    var sessionLevel by remember { mutableStateOf(EnglishLevel.DEFAULT) }
-    LaunchedEffect(defaultLevel) { sessionLevel = defaultLevel }
-    var useMemory by remember { mutableStateOf(true) }
-    val scope = rememberCoroutineScope()
-    val forcePhoneMic by appContainer.audioPrefsStore.forcePhoneMicFlow.collectAsState(initial = false)
-
-    var micGranted by remember { mutableStateOf(appContainer.audioCapture.hasPermission) }
-    // Requested together with RECORD_AUDIO, but only the mic gates
-    // starting a session — a denied notification permission just means
-    // the foreground-service notification (STORY-05-08) won't be
-    // visible while backgrounded; the session still works.
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) { granted -> micGranted = granted[Manifest.permission.RECORD_AUDIO] == true }
-
-    LaunchedEffect(selectedCharacterId) {
-        val id = selectedCharacterId ?: return@LaunchedEffect
-        when (val result = appContainer.apiClient.getCharacter(id)) {
-            is ApiResult.Success -> characterName = result.data.name
-            else -> Unit
-        }
-    }
-
-    // A permission granted externally (Settings, or adb) never fires the
-    // launcher callback above — found live testing this story: `pm grant`
-    // from outside the app left this screen stuck showing the blocked
-    // state even though the OS permission was already granted. Re-check
-    // on every resume, so "grant it in Settings, come back" works without
-    // an app restart, matching this story's own acceptance criterion.
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                micGranted = appContainer.audioCapture.hasPermission
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    // Seeded from the client's own current state, not hardcoded false/null —
-    // this composable is recreated on every tab switch back to this screen,
-    // and a session started before the switch is very much still running
-    // (that's the whole point of STORY-05-08's foreground service); without
-    // this the screen would wrongly show the pre-session Start button for
-    // an already-active session until the next server event happened to
-    // arrive.
-    var sessionActive by remember { mutableStateOf(appContainer.wsSessionClient.sessionActiveFlow.value) }
-    var sessionPhase by remember { mutableStateOf(appContainer.wsSessionClient.sessionPhaseFlow.value) }
-    var transcript by remember { mutableStateOf<List<TranscriptEntry>>(emptyList()) }
+    val characterName by appContainer.voiceSessionLauncher.characterName.collectAsState()
+    val sessionActive by appContainer.wsSessionClient.sessionActiveFlow.collectAsState()
+    val sessionPhase by appContainer.wsSessionClient.sessionPhaseFlow.collectAsState()
+    val transcript by appContainer.liveTranscript.entries.collectAsState()
     // Shared with STORY-05-09's Bluetooth TWS media-button handler (lives in
     // the foreground service) via AudioSessionController.mutedFlow, not
     // owned locally — either source toggling mute must show up here.
@@ -133,288 +78,169 @@ fun VoiceSessionScreen() {
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
-        when (val result = appContainer.apiClient.listScenarios()) {
-            is ApiResult.Success -> scenarios = result.data
-            else -> Unit // freeform still works without scenario content
-        }
-    }
-
-    // Subscribed for the screen's whole lifetime (not gated on
-    // sessionActive) — WsSessionClient's SharedFlow has no replay, so a
-    // collector started only after connect() risks missing the first
-    // session_ready/opening-line events.
-    LaunchedEffect(Unit) {
         appContainer.wsSessionClient.events.collect { event ->
             when (event) {
-                is WsEvent.SessionState -> sessionPhase = event.state
-                is WsEvent.TranscriptFinal -> transcript = transcript + TranscriptEntry.User(event.text)
-                is WsEvent.ResponseTextChunk -> transcript = transcript + TranscriptEntry.Character(event.text)
                 is WsEvent.ServerError -> errorMessage = event.message
-                is WsEvent.SessionEnded -> {
-                    sessionActive = false
-                    sessionPhase = null
-                }
                 is WsEvent.ConnectionLost -> errorMessage = "Connection lost — reconnecting…"
                 is WsEvent.Reconnecting -> errorMessage = "Reconnecting (attempt ${event.attempt})…"
-                is WsEvent.ReconnectFailed -> errorMessage = "Couldn't reconnect. End and start a new session."
+                is WsEvent.ReconnectFailed -> errorMessage = "Couldn't reconnect. Go back and continue the conversation again."
+                is WsEvent.SessionReady -> errorMessage = null
                 else -> Unit
             }
         }
     }
 
     // No teardown-on-dispose here, deliberately — found live while testing
-    // STORY-05-10: switching bottom-nav tabs away from this screen disposes
-    // the composable just like process death would, and this used to call
-    // endSession()/stop() on *any* disposal, silently killing every active
-    // session the moment the user checked Settings or Characters mid-session
-    // — completely defeating STORY-05-08's foreground service, whose whole
-    // point is to keep the session alive independent of this screen's own
-    // lifecycle. Ending a session is now exclusively an explicit user action
-    // (this screen's "End session" button, or the notification's).
+    // STORY-05-10: leaving this screen disposes the composable just like
+    // process death would, and ending the session on *any* disposal killed
+    // it the moment the user looked elsewhere — defeating STORY-05-08's
+    // foreground service. Ending a session is exclusively an explicit user
+    // action (this screen's end button, or the notification's).
 
-    fun startSession() {
-        transcript = emptyList()
-        errorMessage = null
-        sessionPhase = null
-        sessionActive = true
-        appContainer.wsSessionClient.connect(
-            characterId = selectedCharacterId,
-            scenarioId = selectedScenarioId,
-            englishLevel = sessionLevel.id,
-            useMemory = useMemory,
-        )
-        val captureStarted = appContainer.audioSessionController.start(useHeadsetMic = !forcePhoneMic)
-        if (!captureStarted) {
-            errorMessage = "Microphone unavailable — the character can still talk, but won't hear you."
-        }
-        ContextCompat.startForegroundService(
-            context,
-            VoiceSessionForegroundService.startIntent(context, characterName),
-        )
-    }
-
-    fun endSession() {
-        appContainer.wsSessionClient.endSession()
-        appContainer.audioSessionController.stop()
-        context.stopService(Intent(context, VoiceSessionForegroundService::class.java))
-        sessionActive = false
-        sessionPhase = null
-    }
-
-    fun toggleMute() {
-        appContainer.audioSessionController.toggleMute()
-    }
-
-    Scaffold(topBar = { TopAppBar(title = { Text("Voice session") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to conversations")
+                    }
+                },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(characterName, size = 40.dp)
+                        Column(modifier = Modifier.padding(start = 12.dp)) {
+                            Text(characterName, style = MaterialTheme.typography.titleMedium)
+                            StatusLine(if (sessionActive) sessionPhase else null, sessionActive, muted)
+                        }
+                    }
+                },
+            )
+        },
+        bottomBar = {
+            Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(vertical = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(32.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (sessionActive) {
+                        MicButton(muted, listening = sessionPhase == SessionPhase.LISTENING) {
+                            appContainer.audioSessionController.toggleMute()
+                        }
+                        FilledIconButton(
+                            onClick = {
+                                appContainer.voiceSessionLauncher.end(context)
+                                onClose()
+                            },
+                            modifier = Modifier.size(64.dp),
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Color(0xFFE53935),
+                                contentColor = Color.White,
+                            ),
+                        ) { Icon(Icons.Default.CallEnd, contentDescription = "End conversation", modifier = Modifier.size(30.dp)) }
+                    } else {
+                        Button(onClick = onClose) { Text("Back to conversations") }
+                    }
+                }
+            }
+        },
+    ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             errorMessage?.let { message ->
-                Card(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    Row(modifier = Modifier.padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(message, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                         TextButton(onClick = { errorMessage = null }) { Text("Dismiss") }
                     }
                 }
             }
 
-            if (!sessionActive) {
-                PreSessionContent(
-                    characterSelected = selectedCharacterId != null,
-                    scenarios = scenarios,
-                    selectedScenarioId = selectedScenarioId,
-                    onSelectScenario = { selectedScenarioId = it },
-                    level = sessionLevel,
-                    onSelectLevel = { sessionLevel = it },
-                    useMemory = useMemory,
-                    onUseMemoryChange = { useMemory = it },
-                    forcePhoneMic = forcePhoneMic,
-                    onForcePhoneMicChange = { enabled ->
-                        scope.launch { appContainer.audioPrefsStore.setForcePhoneMic(enabled) }
-                    },
-                    micGranted = micGranted,
-                    onRequestMic = {
-                        permissionLauncher.launch(
-                            arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS),
-                        )
-                    },
-                    onStart = { startSession() },
-                )
+            if (transcript.isEmpty() && sessionPhase != SessionPhase.PROCESSING) {
+                EmptyCallHint(characterName, sessionActive, sessionPhase, Modifier.weight(1f))
             } else {
-                InSessionContent(
-                    phase = sessionPhase,
+                ChatTranscript(
                     transcript = transcript,
-                    muted = muted,
-                    onToggleMute = { toggleMute() },
-                    onEnd = { endSession() },
+                    characterName = characterName,
+                    characterKey = characterName,
+                    listState = rememberLazyListState(),
+                    activity = if (sessionActive && sessionPhase == SessionPhase.PROCESSING) ChatActivity.THINKING else ChatActivity.NONE,
+                    modifier = Modifier.weight(1f),
                 )
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** "Listening…" with a pulsing dot, "Thinking…", "Speaking…". */
 @Composable
-private fun PreSessionContent(
-    characterSelected: Boolean,
-    scenarios: List<ScenarioDefinition>,
-    selectedScenarioId: String?,
-    onSelectScenario: (String?) -> Unit,
-    level: EnglishLevel,
-    onSelectLevel: (EnglishLevel) -> Unit,
-    useMemory: Boolean,
-    onUseMemoryChange: (Boolean) -> Unit,
-    forcePhoneMic: Boolean,
-    onForcePhoneMicChange: (Boolean) -> Unit,
-    micGranted: Boolean,
-    onRequestMic: () -> Unit,
-    onStart: () -> Unit,
-) {
+private fun StatusLine(phase: SessionPhase?, active: Boolean, muted: Boolean) {
+    val (label, color) = when {
+        !active -> "Conversation ended" to MaterialTheme.colorScheme.onSurfaceVariant
+        muted && phase == SessionPhase.LISTENING -> "Muted" to MaterialTheme.colorScheme.error
+        phase == SessionPhase.LISTENING -> "Listening — your turn" to Color(0xFF2E9D5B)
+        phase == SessionPhase.PROCESSING -> "Thinking…" to MaterialTheme.colorScheme.tertiary
+        phase == SessionPhase.SPEAKING -> "Speaking…" to MaterialTheme.colorScheme.primary
+        else -> "Connecting…" to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val pulse = rememberInfiniteTransition(label = "status")
+    val alpha by pulse.animateFloat(0.3f, 1f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "alpha")
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier.size(8.dp)
+                .background(color.copy(alpha = if (active && phase != null) alpha else 1f), CircleShape),
+        )
+        Text(label, style = MaterialTheme.typography.bodySmall, color = color, modifier = Modifier.padding(start = 6.dp))
+    }
+}
+
+/** The mic button gently pulses while it's the user's turn. */
+@Composable
+private fun MicButton(muted: Boolean, listening: Boolean, onClick: () -> Unit) {
+    val pulse = rememberInfiniteTransition(label = "mic")
+    val scale by pulse.animateFloat(1f, 1.08f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "scale")
+    val container by animateColorAsState(
+        if (muted) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.primaryContainer,
+        label = "micColor",
+    )
+    FilledIconButton(
+        onClick = onClick,
+        modifier = Modifier.size(64.dp).scale(if (listening && !muted) scale else 1f),
+        colors = IconButtonDefaults.filledIconButtonColors(
+            containerColor = container,
+            contentColor = if (muted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onPrimaryContainer,
+        ),
+    ) {
+        Icon(
+            if (muted) Icons.Default.MicOff else Icons.Default.Mic,
+            contentDescription = if (muted) "Unmute" else "Mute",
+            modifier = Modifier.size(30.dp),
+        )
+    }
+}
+
+@Composable
+private fun EmptyCallHint(name: String, active: Boolean, phase: SessionPhase?, modifier: Modifier) {
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        modifier = modifier.fillMaxWidth().padding(32.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Hands-Free Room", style = MaterialTheme.typography.headlineSmall)
-
-        if (!characterSelected) {
-            Text(
-                "Select a character on the Characters tab first.",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 12.dp),
-            )
-            return@Column
-        }
-
-        if (!micGranted) {
-            Text(
-                "Microphone access is needed to talk to your character.",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
-            )
-            Button(onClick = onRequestMic) { Text("Grant microphone access") }
-            return@Column
-        }
-
+        Avatar(name, size = 96.dp)
+        Text(name, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 16.dp))
         Text(
-            "Scenario",
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp),
+            when {
+                !active -> "Conversation ended"
+                phase == null -> "Connecting…"
+                else -> "Say hello — $name is listening."
+            },
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = selectedScenarioId == null,
-                onClick = { onSelectScenario(null) },
-                label = { Text("Freeform") },
-            )
-        }
-        scenarios.forEach { scenario ->
-            FilterChip(
-                selected = selectedScenarioId == scenario.id,
-                onClick = { onSelectScenario(scenario.id) },
-                label = { Text(scenario.title) },
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
-
-        Text(
-            "English level",
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp),
-        )
-        EnglishLevelPicker(selected = level, onSelect = onSelectLevel)
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Remember past conversations", style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    "Off: the character starts without what it knows about you from earlier sessions.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Switch(checked = useMemory, onCheckedChange = onUseMemoryChange)
-        }
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Use phone microphone", style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    "Records with the phone even when a Bluetooth headset is connected: clearer sound, but keep the phone close.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Switch(checked = forcePhoneMic, onCheckedChange = onForcePhoneMicChange)
-        }
-
-        Button(onClick = onStart, modifier = Modifier.padding(top = 24.dp)) {
-            Text("Start")
-        }
     }
-}
-
-@Composable
-private fun InSessionContent(
-    phase: SessionPhase?,
-    transcript: List<TranscriptEntry>,
-    muted: Boolean,
-    onToggleMute: () -> Unit,
-    onEnd: () -> Unit,
-) {
-    val listState = rememberLazyListState()
-    LaunchedEffect(transcript.size) {
-        if (transcript.isNotEmpty()) listState.animateScrollToItem(transcript.size - 1)
-    }
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        Text(
-            phaseLabel(phase),
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-        )
-
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp),
-        ) {
-            items(transcript) { entry ->
-                val (speaker, text) = when (entry) {
-                    is TranscriptEntry.User -> "You" to entry.text
-                    is TranscriptEntry.Character -> "Character" to entry.text
-                }
-                Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                    Text(speaker, style = MaterialTheme.typography.labelSmall)
-                    Text(text, style = MaterialTheme.typography.bodyLarge)
-                }
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(24.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onToggleMute) {
-                Icon(
-                    if (muted) Icons.Default.MicOff else Icons.Default.Mic,
-                    contentDescription = if (muted) "Unmute" else "Mute",
-                )
-            }
-            Button(onClick = onEnd) { Text("End session") }
-        }
-    }
-}
-
-private fun phaseLabel(phase: SessionPhase?): String = when (phase) {
-    SessionPhase.LISTENING -> "Listening…"
-    SessionPhase.PROCESSING -> "Thinking…"
-    SessionPhase.SPEAKING -> "Speaking…"
-    null -> "Connecting…"
 }

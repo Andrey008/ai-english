@@ -13,7 +13,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
-/** Typed client for `/characters` and `/scenarios` (`server/app/main.py`).
+/** Typed client for `/characters`, `/scenarios` and `/conversations`
+ * (`server/app/main.py`).
  * Reads the server address fresh on every call (via [baseUrlProvider]) so a
  * user changing it in Settings (`STORY-05-10`) doesn't require restarting
  * the app. */
@@ -67,6 +68,18 @@ class ApiClient(
     suspend fun deleteScenario(id: String): ApiResult<Unit> =
         toUnit(raw(request("DELETE", "/scenarios/$id")))
 
+    suspend fun listConversations(): ApiResult<List<ConversationSummary>> =
+        decoded(request("GET", "/conversations"))
+
+    suspend fun getConversation(id: String): ApiResult<ConversationDetail> =
+        decoded(request("GET", "/conversations/$id"))
+
+    suspend fun renameConversation(id: String, title: String): ApiResult<ConversationDetail> =
+        decoded(request("PATCH", "/conversations/$id", json.encodeToString(ConversationRename(title))))
+
+    suspend fun deleteConversation(id: String): ApiResult<Unit> =
+        toUnit(raw(request("DELETE", "/conversations/$id")))
+
     private suspend fun request(method: String, path: String, jsonBody: String? = null): Request {
         val url = "${baseUrlProvider()}$path"
         val builder = Request.Builder().url(url)
@@ -75,6 +88,7 @@ class ApiClient(
             "DELETE" -> builder.delete()
             "POST" -> builder.post((jsonBody ?: "").toRequestBody(JSON_MEDIA_TYPE))
             "PUT" -> builder.put((jsonBody ?: "").toRequestBody(JSON_MEDIA_TYPE))
+            "PATCH" -> builder.patch((jsonBody ?: "").toRequestBody(JSON_MEDIA_TYPE))
         }
         return builder.build()
     }

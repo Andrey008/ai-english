@@ -34,6 +34,7 @@ import java.util.concurrent.TimeUnit
 
 private const val TAG = "WsSessionClient"
 private const val PROTO_VERSION = 1
+private const val CLOSE_NOT_FOUND = 4404
 private val RECONNECT_BACKOFF_MS = listOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 32_000L)
 
 /** No `pingInterval` means OkHttp never proactively probes an idle
@@ -102,23 +103,28 @@ class WsSessionClient(
     @Volatile private var scenarioId: String? = null
     @Volatile private var englishLevel: String? = null
     @Volatile private var useMemory: Boolean = true
+    @Volatile private var resumeSessionId: String? = null
     @Volatile private var currentAudioSentenceIndex: Int? = null
     @Volatile private var explicitlyEnded = true
     @Volatile private var reconnectAttempt = 0
     private var reconnectJob: Job? = null
 
-    /** Starts a fresh session (no `session_id`) — always create mode, per
-     * the protocol; reconnect is this client's own internal concern. */
+    /** Starts a fresh session (no `session_id`), or continues a past
+     * conversation with [resumeSessionId] (ADR-0015: the server takes the
+     * character and scenario from it, so those are ignored then).
+     * Reconnect is this client's own internal concern. */
     fun connect(
         characterId: String? = null,
         scenarioId: String? = null,
         englishLevel: String? = null,
         useMemory: Boolean = true,
+        resumeSessionId: String? = null,
     ) {
         this.characterId = characterId
         this.scenarioId = scenarioId
         this.englishLevel = englishLevel
         this.useMemory = useMemory
+        this.resumeSessionId = resumeSessionId
         this.sessionId = null
         explicitlyEnded = false
         reconnectAttempt = 0
@@ -187,8 +193,12 @@ class WsSessionClient(
                 put("type", "session_start")
                 put("proto_version", PROTO_VERSION)
                 val currentSessionId = sessionId
+                val resumeId = resumeSessionId
                 if (currentSessionId != null) {
                     put("session_id", currentSessionId)
+                } else if (resumeId != null) {
+                    put("resume_session_id", resumeId)
+                    englishLevel?.let { put("english_level", it) }
                 } else {
                     characterId?.let { put("character_id", it) }
                     scenarioId?.let { put("scenario_id", it) }
@@ -210,6 +220,13 @@ class WsSessionClient(
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             Log.w(TAG, "server closing socket: code=$code reason=$reason")
+            if (code == CLOSE_NOT_FOUND && !isStale(webSocket)) {
+                // The conversation to continue is gone (deleted); retrying can't help.
+                explicitlyEnded = true
+                _sessionActive.value = false
+                _sessionPhase.value = null
+                clientScope.launch { _events.emit(WsEvent.ReconnectFailed) }
+            }
             webSocket.close(1000, null)
         }
 

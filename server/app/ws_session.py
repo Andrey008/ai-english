@@ -30,6 +30,12 @@ Client -> Server:
   `use_memory: false` starts without the character's memory of past
   sessions (default true; the session is still remembered afterwards).
   Both are ignored on reconnect too.
+- `{"type": "session_start", "proto_version": 1, "resume_session_id": "...", "english_level": "<optional>", "use_memory": <optional bool>}`
+  Continues a past conversation (ADR-0015) under its own id: character,
+  scenario (no opening line) and stored level come from its row; history
+  is rebuilt from its turns. Closes with 4404 if there is no such row. A
+  plain reconnect with a `session_id` the server no longer holds in memory
+  resumes the same way.
 - `{"type": "session_end"}` — clean end, releases the session for good.
 - (binary) mic audio chunks, any size, PCM16/16kHz/mono.
 
@@ -46,9 +52,9 @@ Server -> Client:
 - `{"type": "error", "message": "..."}` — non-fatal unless followed by close.
 - `{"type": "session_ended"}`
 
-Known gap (not this story's job): a server restart mid-session loses
-in-memory state entirely — no crash-recovery, just no worse than not
-existing. Full reconnect UX is `EPIC-08`.
+A server restart mid-session loses in-memory state, but the client's
+reconnect then resumes the conversation from the DB (see above). Full
+reconnect UX is `EPIC-08`.
 """
 from __future__ import annotations
 
@@ -57,6 +63,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -192,6 +199,13 @@ async def handle_ws_session(websocket: WebSocket) -> None:
         return
 
     requested_session_id = first.get("session_id")
+    resume_id = first.get("resume_session_id")
+    if resume_id and not requested_session_id:
+        if await db.get_session(resume_id) is None:
+            await websocket.send_json({"type": "error", "message": f"conversation {resume_id!r} not found"})
+            await websocket.close(code=4404)
+            return
+        requested_session_id = resume_id
     try:
         claim = registry.try_claim(requested_session_id, owner=websocket)
     except SessionConflictError as exc:
@@ -209,22 +223,28 @@ async def handle_ws_session(websocket: WebSocket) -> None:
 
     preset = None
     scenario = None
+    resumed = False
+    memory_since = None  # resume time: the memory update only reads newer turns
+    session_row = await db.get_session(session_id) if requested_session_id else None
     if claim.is_reconnect:
         # Restore which character this session was bound to, so TTS
         # voice selection stays consistent across a reconnect. Scenario
         # opening lines don't replay on reconnect (already spoken/in
         # history), so scenario isn't restored here.
-        session_row = await db.get_session(session_id)
         if session_row and session_row.get("character_id"):
             preset = app.state.preset_store.get(session_row["character_id"])
+        english_level = _level((session_row or {}).get("english_level"))
+        use_memory = None
     else:
-        character_id = first.get("character_id")
+        resumed = session_row is not None
+        row = session_row or {}
+        character_id = row.get("character_id") if resumed else first.get("character_id")
         if character_id:
             preset = app.state.preset_store.get(character_id)
             if preset is None:
                 logger.warning("ws_unknown_character_id", extra={"character_id": character_id})
 
-        scenario_id = first.get("scenario_id")
+        scenario_id = row.get("scenario_id") if resumed else first.get("scenario_id")
         if scenario_id:
             scenario = app.state.scenario_store.get(scenario_id)
             if scenario is None:
@@ -234,33 +254,50 @@ async def handle_ws_session(websocket: WebSocket) -> None:
         if english_level not in ENGLISH_LEVELS:
             if english_level is not None:
                 logger.warning("ws_unknown_english_level", extra={"english_level": english_level})
-            english_level = DEFAULT_ENGLISH_LEVEL
+            english_level = _level(row.get("english_level"))
 
-        use_memory = first.get("use_memory", True) is not False
+        stored_memory = row.get("use_memory")
+        use_memory = first.get("use_memory", True if stored_memory is None else bool(stored_memory)) is not False
         memory_summary = None
         if preset is not None and preset.memory_enabled and use_memory:
             memory = await db.get_character_memory(preset.id)
             memory_summary = memory.get("rolling_summary") if memory else None
 
         system_prompt = compose_system_prompt(preset, scenario, english_level, memory_summary)
-        conversation_engine.start_session(
-            session_id,
-            system_prompt=system_prompt,
-            opening_message=scenario.opening_line_hint if scenario else None,
-        )
-        await db.create_session(
-            session_id,
-            character_id=preset.id if preset else None,
-            scenario_id=scenario.id if scenario else None,
-        )
+        if resumed:
+            turns = await db.get_transcript(session_id)
+            restored, mode = conversation_engine.restore_history(system_prompt, turns, row.get("summary"))
+            conversation_engine.start_session(
+                session_id, system_prompt=system_prompt, restored=restored if len(restored) > 1 else None
+            )
+            memory_since = datetime.now(timezone.utc).isoformat()
+            await db.reopen_session(session_id)
+            logger.info(
+                "conversation_resumed" if mode != "truncated" else "conversation_resume_truncated",
+                extra={"session_id": session_id, "mode": mode, "turns": len(turns), "messages": len(restored) - 1},
+            )
+        else:
+            conversation_engine.start_session(
+                session_id,
+                system_prompt=system_prompt,
+                opening_message=scenario.opening_line_hint if scenario else None,
+            )
+            await db.create_session(
+                session_id,
+                character_id=preset.id if preset else None,
+                scenario_id=scenario.id if scenario else None,
+                english_level=english_level,
+                use_memory=use_memory,
+            )
 
     logger.info(
         "ws_session_started",
         extra={
             "session_id": session_id,
             "reconnected": claim.is_reconnect,
-            "english_level": None if claim.is_reconnect else english_level,
-            "use_memory": None if claim.is_reconnect else use_memory,
+            "resumed": resumed,
+            "english_level": english_level,
+            "use_memory": use_memory,
             "turn_patience_s": turn_patience_s(app.state.config, english_level),
         },
     )
@@ -368,7 +405,7 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             segmenter.reset()
 
     try:
-        if scenario is not None:
+        if scenario is not None and not resumed:
             await websocket.send_json({"type": "session_state", "state": "speaking"})
             await _speak_text(websocket, tts_service, session_id, scenario.opening_line_hint, voice_id, clock)
             await db.add_turn(session_id, "assistant", scenario.opening_line_hint)
@@ -444,17 +481,13 @@ async def handle_ws_session(websocket: WebSocket) -> None:
                 pass
         if clean_end:
             registry.end(session_id)
+            history = conversation_engine.history(session_id)
             conversation_engine.end_session(session_id)
             await db.end_session(session_id)
-            if preset is not None and preset.memory_enabled:
-                # Fire-and-forget: fully off the session-teardown path, let
-                # alone the live conversation's — the client doesn't wait
-                # on this to get its session_ended ack.
-                asyncio.create_task(
-                    app.state.character_memory_service.update_after_session(
-                        session_id, preset.id, preset.name
-                    )
-                )
+            # Fire-and-forget: fully off the session-teardown path, let
+            # alone the live conversation's — the client doesn't wait on
+            # this to get its session_ended ack.
+            asyncio.create_task(_after_session(app, session_id, history, preset, memory_since))
             try:
                 await websocket.send_json({"type": "session_ended"})
             except Exception:
@@ -463,6 +496,32 @@ async def handle_ws_session(websocket: WebSocket) -> None:
         else:
             registry.release(session_id, claim.generation)
             logger.info("ws_session_released_for_reconnect", extra={"session_id": session_id})
+
+
+def _level(stored: str | None) -> str:
+    return stored if stored in ENGLISH_LEVELS else DEFAULT_ENGLISH_LEVEL
+
+
+async def _after_session(app, session_id: str, history: list[dict] | None, preset, memory_since: str | None) -> None:
+    """Wrap-up (title, plus notes when a resume would need them, ADR-0015)
+    first, while Ollama still has this history cached; then the character
+    memory, which re-reads the transcript anyway."""
+    db, engine = app.state.db, app.state.conversation_engine
+    try:
+        turns = await db.get_transcript(session_id)
+        if history and any(t["role"] == "user" for t in turns):
+            with_notes = not engine.fits_context(
+                history[:1] + [{"role": t["role"], "content": t["text"]} for t in turns]
+            )
+            title, notes = await engine.wrap_up(session_id, history, with_notes)
+            if title or notes:
+                await db.save_wrap_up(session_id, title, notes, len(turns))
+        if preset is not None and preset.memory_enabled:
+            await app.state.character_memory_service.update_after_session(
+                session_id, preset.id, preset.name, since=memory_since
+            )
+    except Exception:
+        logger.exception("ws_after_session_error", extra={"session_id": session_id})
 
 
 async def _close_quietly(websocket) -> None:

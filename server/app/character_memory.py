@@ -45,8 +45,12 @@ class CharacterMemoryService:
         self._db = db
         self._client = ollama.AsyncClient()
 
-    async def update_after_session(self, session_id: str, character_id: str, character_name: str) -> str | None:
-        transcript = await self._db.get_transcript(session_id)
+    async def update_after_session(
+        self, session_id: str, character_id: str, character_name: str, since: str | None = None
+    ) -> str | None:
+        """`since`: a resumed conversation's resume time, so only its new
+        turns are merged in (the earlier ones already were, ADR-0015)."""
+        transcript = await self._db.get_transcript(session_id, since=since)
         if not transcript:
             return None
 

@@ -1,7 +1,6 @@
 package com.aienglish.companion.ui.screens
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,12 +10,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
@@ -31,7 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -43,10 +46,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.aienglish.companion.data.api.ApiResult
 import com.aienglish.companion.data.api.CharacterPreset
 import com.aienglish.companion.ui.LocalAppContainer
+import com.aienglish.companion.ui.components.Avatar
 import kotlinx.coroutines.launch
 
 private sealed class ListUiState {
@@ -57,7 +62,7 @@ private sealed class ListUiState {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CharacterListScreen(onCreateNew: () -> Unit, onEdit: (String) -> Unit) {
+fun CharacterListScreen(onCreateNew: () -> Unit, onEdit: (String) -> Unit, onOpenGuide: () -> Unit = {}) {
     val appContainer = LocalAppContainer.current
     val scope = rememberCoroutineScope()
     var uiState by remember { mutableStateOf<ListUiState>(ListUiState.Loading) }
@@ -79,9 +84,12 @@ fun CharacterListScreen(onCreateNew: () -> Unit, onEdit: (String) -> Unit) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            LargeTopAppBar(
                 title = { Text("Characters") },
                 actions = {
+                    IconButton(onClick = onOpenGuide) {
+                        Icon(Icons.AutoMirrored.Filled.HelpOutline, contentDescription = "Character guide")
+                    }
                     IconButton(onClick = { scope.launch { refresh() } }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
@@ -99,9 +107,10 @@ fun CharacterListScreen(onCreateNew: () -> Unit, onEdit: (String) -> Unit) {
             is ListUiState.Error -> ErrorState(padding, state.message) { scope.launch { refresh() } }
             is ListUiState.Loaded -> {
                 if (state.characters.isEmpty()) {
-                    EmptyState(padding)
+                    EmptyState(padding, onOpenGuide)
                 } else {
                     LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
+                        item { GuideCard(onOpenGuide) }
                         items(state.characters, key = { it.id }) { character ->
                             CharacterRow(
                                 character = character,
@@ -159,24 +168,15 @@ private fun CharacterRow(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                character.name.take(1).uppercase(),
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                style = MaterialTheme.typography.titleMedium,
-            )
-        }
+        Avatar(character.name, size = 48.dp)
         Column(modifier = Modifier.padding(start = 16.dp).weight(1f)) {
             Text(character.name, style = MaterialTheme.typography.titleMedium)
             Text(
-                "${character.gender.name.lowercase()} · ${character.accent}",
-                style = MaterialTheme.typography.bodySmall,
+                character.roleDescription,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         if (isSelected) {
@@ -193,6 +193,38 @@ private fun CharacterRow(
     }
 }
 
+/** Entry point to the illustrated character guide, above the list. */
+@Composable
+private fun GuideCard(onOpen: () -> Unit) {
+    Card(
+        onClick = onOpen,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+    ) {
+        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Default.AutoAwesome,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.size(32.dp),
+            )
+            Column(modifier = Modifier.weight(1f).padding(start = 14.dp)) {
+                Text(
+                    "How to make a great character",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                Text(
+                    "A 6-step illustrated guide: role, voice, corrections, memory.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+            }
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
+        }
+    }
+}
+
 @Composable
 private fun LoadingState(padding: PaddingValues) {
     Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
@@ -201,7 +233,7 @@ private fun LoadingState(padding: PaddingValues) {
 }
 
 @Composable
-private fun EmptyState(padding: PaddingValues) {
+private fun EmptyState(padding: PaddingValues, onOpenGuide: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
         verticalArrangement = Arrangement.Center,
@@ -213,6 +245,9 @@ private fun EmptyState(padding: PaddingValues) {
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
         )
+        TextButton(onClick = onOpenGuide, modifier = Modifier.padding(top = 8.dp)) {
+            Text("How to make a great character")
+        }
     }
 }
 
