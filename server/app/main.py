@@ -1,15 +1,19 @@
 """FastAPI app factory."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import FastAPI, HTTPException, WebSocket
 from pydantic import BaseModel, Field
 
 from app.character_memory import CharacterMemoryService
+from app.claude_gateway import ClaudeGateway
 from app.config import get_config
 from app.conversation_engine import ConversationEngine
 from app.db import Database
+from app.interview.prep_client import PrepClient, PrepUnavailable
+from app.interview.translation import translate_missing
 from app.logging_setup import configure_logging
 from app.presets import CharacterPreset, PresetExistsError, PresetNotFoundError, PresetStore
 from app.scenarios import ScenarioDefinition, ScenarioExistsError, ScenarioNotFoundError, ScenarioStore
@@ -34,6 +38,20 @@ def create_app() -> FastAPI:
     app.state.preset_store = PresetStore(config)
     app.state.scenario_store = ScenarioStore(config)
     app.state.character_memory_service = CharacterMemoryService(config, app.state.db)
+    app.state.claude_gateway = ClaudeGateway(config)
+    app.state.prep_client = PrepClient(config)
+    app.state.background_tasks = set()
+
+    async def translate_prep_questions() -> None:
+        """EPIC-10: fill the RU→EN question cache in the background.
+        Missing prep or gateway is not an error for the server."""
+        try:
+            base = await app.state.prep_client.fetch()
+            await translate_missing(base.questions, app.state.db, app.state.claude_gateway)
+        except PrepUnavailable as exc:
+            logger.info("interview_translation_skipped", extra={"reason": str(exc)})
+        except Exception:
+            logger.exception("interview_translation_error")
 
     @app.on_event("startup")
     async def on_startup() -> None:
@@ -52,6 +70,12 @@ def create_app() -> FastAPI:
         logger.info("conversation_engine_ready", extra={"model": config["llm"]["model"]})
         app.state.preset_store.ensure_seed()
         logger.info("preset_store_ready", extra={"count": len(app.state.preset_store.list())})
+        if app.state.claude_gateway.configured:
+            task = asyncio.create_task(translate_prep_questions())
+            app.state.background_tasks.add(task)
+            task.add_done_callback(app.state.background_tasks.discard)
+        else:
+            logger.info("claude_gateway_not_configured")
 
     @app.on_event("shutdown")
     async def on_shutdown() -> None:

@@ -206,3 +206,24 @@ class Database:
         assert self._conn is not None
         await self._conn.execute("DELETE FROM character_memory WHERE character_id = ?", (character_id,))
         await self._conn.commit()
+
+    async def get_interview_translations(self) -> dict[str, dict]:
+        """question_id → {source_sha256, question_en}."""
+        assert self._conn is not None
+        cursor = await self._conn.execute("SELECT question_id, source_sha256, question_en FROM interview_translations")
+        return {row["question_id"]: dict(row) for row in await cursor.fetchall()}
+
+    async def save_interview_translations(self, rows: list[tuple[str, str, str]], model: str) -> None:
+        """rows: (question_id, source_sha256, question_en); upsert."""
+        assert self._conn is not None
+        now = _now()
+        await self._conn.executemany(
+            """
+            INSERT INTO interview_translations (question_id, source_sha256, question_en, model, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(question_id) DO UPDATE SET source_sha256 = excluded.source_sha256,
+                question_en = excluded.question_en, model = excluded.model, created_at = excluded.created_at
+            """,
+            [(qid, sha, text, model, now) for qid, sha, text in rows],
+        )
+        await self._conn.commit()

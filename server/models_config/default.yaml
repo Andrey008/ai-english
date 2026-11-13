@@ -98,3 +98,29 @@ latency_budget:
   # ADR-0006 — working target, quiet/normal conditions. Not a hard
   # runtime enforcement, just the number STORY-02-09 validates against.
   ttfa_target_s: 3.0
+
+# Interview mode (EPIC-10, ADR-0016). Questions come from the prep base
+# (~/www/self/cv/prep, Docker on :80) via GET /export.json.
+interview:
+  question_count: 10
+  max_followups: 1
+  # Skip questions asked in this many most recent interviews (relaxed if
+  # too few remain).
+  exclude_recent_sessions: 3
+  prep:
+    base_url: http://127.0.0.1
+    timeout_s: 3
+  # Selection weight = prio weight × status weight (STORY-10-01).
+  weights:
+    prio: {1: 3, 2: 2, 3: 1}
+    status: {learn: 2, none: 1, know: 0.5}
+
+# claude_gateway (~/www/self/claude_gateway): Claude Code on the user's
+# subscription as HTTP. Used only off the live path — question translation
+# and the interview review (ADR-0016 §1). The client key is NOT set here:
+# put AI_ENGLISH__CLAUDE_GATEWAY__API_KEY=... in server/.env (gitignored).
+claude_gateway:
+  base_url: http://127.0.0.1:8091
+  translate_model: haiku
+  review_model: sonnet
+  timeout_s: 600
