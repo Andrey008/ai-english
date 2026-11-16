@@ -51,42 +51,7 @@ import com.aienglish.companion.data.Appearance
 import com.aienglish.companion.data.EnglishLevel
 import com.aienglish.companion.data.ThemeMode
 import com.aienglish.companion.ui.LocalAppContainer
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import java.util.concurrent.TimeUnit
-
-private fun testConnectionClient(): OkHttpClient = OkHttpClient.Builder()
-    .connectTimeout(4, TimeUnit.SECONDS)
-    .readTimeout(4, TimeUnit.SECONDS)
-    .build()
-
-/** Result of hitting `/healthz` against whatever host/port is currently
- * typed in the form — deliberately not [com.aienglish.companion.data.api.ApiClient],
- * which always reads the *saved* config; this needs to test unsaved values
- * before the user commits to them. */
-private sealed class ConnectionTestResult {
-    object Reachable : ConnectionTestResult()
-    data class Unreachable(val reason: String) : ConnectionTestResult()
-}
-
-private suspend fun testConnection(host: String, port: Int): ConnectionTestResult = withContext(Dispatchers.IO) {
-    try {
-        val request = Request.Builder().url("http://$host:$port/healthz").build()
-        testConnectionClient().newCall(request).execute().use { response ->
-            if (response.isSuccessful) {
-                ConnectionTestResult.Reachable
-            } else {
-                ConnectionTestResult.Unreachable("Server responded with HTTP ${response.code}")
-            }
-        }
-    } catch (e: Exception) {
-        ConnectionTestResult.Unreachable(e.message ?: e.javaClass.simpleName)
-    }
-}
 
 /** Appearance (light/dark theme, wallpaper colors), default English level,
  * editable server connection config (supersedes STORY-05-01's first-run-only
@@ -99,44 +64,9 @@ fun SettingsScreen() {
     val appContainer = LocalAppContainer.current
     val scope = rememberCoroutineScope()
 
-    var host by remember { mutableStateOf("") }
-    var portText by remember { mutableStateOf("8000") }
-
-    LaunchedEffect(Unit) {
-        val config = appContainer.serverConfigStore.configFlow.first()
-        host = config.host
-        portText = config.port.toString()
-    }
-
     val sessionActive by appContainer.wsSessionClient.sessionActiveFlow.collectAsState()
     val defaultLevel by appContainer.englishLevelStore.defaultLevelFlow.collectAsState(initial = EnglishLevel.DEFAULT)
     val appearance by appContainer.appearanceStore.appearanceFlow.collectAsState(initial = Appearance())
-
-    var saving by remember { mutableStateOf(false) }
-    var saveMessage by remember { mutableStateOf<String?>(null) }
-    var testing by remember { mutableStateOf(false) }
-    var testResult by remember { mutableStateOf<ConnectionTestResult?>(null) }
-
-    fun save() {
-        val port = portText.toIntOrNull() ?: return
-        scope.launch {
-            saving = true
-            saveMessage = null
-            appContainer.serverConfigStore.save(host.trim(), port)
-            saving = false
-            saveMessage = "Saved."
-        }
-    }
-
-    fun test() {
-        val port = portText.toIntOrNull() ?: return
-        scope.launch {
-            testing = true
-            testResult = null
-            testResult = testConnection(host.trim(), port)
-            testing = false
-        }
-    }
 
     Scaffold(topBar = { LargeTopAppBar(title = { Text("Settings") }) }) { padding ->
         Column(
@@ -189,47 +119,7 @@ fun SettingsScreen() {
                         modifier = Modifier.padding(bottom = 12.dp),
                     )
                 }
-                OutlinedTextField(
-                    value = host,
-                    onValueChange = { host = it },
-                    label = { Text("Host") },
-                    singleLine = true,
-                    enabled = !sessionActive,
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                )
-                OutlinedTextField(
-                    value = portText,
-                    onValueChange = { portText = it.filter(Char::isDigit) },
-                    label = { Text("Port") },
-                    singleLine = true,
-                    enabled = !sessionActive,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(
-                        onClick = { save() },
-                        enabled = !sessionActive && !saving && host.isNotBlank() && portText.isNotBlank(),
-                    ) {
-                        if (saving) CircularProgressIndicator(modifier = Modifier.size(20.dp)) else Text("Save")
-                    }
-                    OutlinedButton(
-                        onClick = { test() },
-                        enabled = !testing && host.isNotBlank() && portText.isNotBlank(),
-                    ) {
-                        Text(if (testing) "Testing…" else "Test connection")
-                    }
-                }
-                saveMessage?.let {
-                    Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
-                }
-                testResult?.let { result ->
-                    val (message, color) = when (result) {
-                        is ConnectionTestResult.Reachable -> "Reachable." to MaterialTheme.colorScheme.primary
-                        is ConnectionTestResult.Unreachable -> "Unreachable: ${result.reason}" to MaterialTheme.colorScheme.error
-                    }
-                    Text(message, style = MaterialTheme.typography.bodyMedium, color = color, modifier = Modifier.padding(top = 8.dp))
-                }
+                ServerConnectionForm(store = appContainer.serverConfigStore, enabled = !sessionActive)
             }
 
             SettingsCard(title = "About", icon = Icons.Default.Info) {

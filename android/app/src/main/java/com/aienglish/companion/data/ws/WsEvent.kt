@@ -42,6 +42,11 @@ sealed class WsEvent {
      * starts a fresh session, since the server's reconnect grace window
      * has almost certainly passed by then). */
     data object ReconnectFailed : WsEvent()
+
+    /** The client won't connect at all: missing or rejected token, or an
+     * unencrypted connection to a public host (ADR-0017). Retrying can't
+     * help; [message] says what to fix in Settings. */
+    data class ConnectRefused(val message: String) : WsEvent()
 }
 
 enum class SessionPhase { LISTENING, PROCESSING, SPEAKING }

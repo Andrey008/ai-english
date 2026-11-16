@@ -20,6 +20,7 @@ import sqlite3
 import time
 
 import websockets
+from _auth import auth_headers
 
 from live_persona_spotcheck import DB_PATH, VOICE_CONFIG, VOICE_MODEL, send_utterance, synthesize_to_pcm16k
 from piper.voice import PiperVoice
@@ -42,7 +43,7 @@ async def run(url: str, count: int, followups: int) -> str | None:
     voice = PiperVoice.load(str(VOICE_MODEL), str(VOICE_CONFIG))
     t0 = time.time()
     session_id = None
-    async with websockets.connect(url, max_size=None) as ws:
+    async with websockets.connect(url, max_size=None, additional_headers=auth_headers()) as ws:
         await ws.send(json.dumps({"type": "session_start", "proto_version": 1, "character_id": "daniel_interviewer",
                                   "english_level": "B2",
                                   "interview": {"count": count, "max_followups": followups}}))

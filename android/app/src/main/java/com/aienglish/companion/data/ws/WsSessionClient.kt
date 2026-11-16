@@ -1,6 +1,7 @@
 package com.aienglish.companion.data.ws
 
 import android.util.Log
+import com.aienglish.companion.data.ServerConfig
 import com.aienglish.companion.data.ServerConfigStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,14 +59,11 @@ private fun defaultOkHttpClient(): OkHttpClient =
  * guessing at continuity itself, per the protocol doc's known gap around
  * a server restart losing in-memory session state). */
 class WsSessionClient(
-    private val baseUrlProvider: suspend () -> String,
+    private val configProvider: suspend () -> ServerConfig,
     private val httpClient: OkHttpClient = defaultOkHttpClient(),
 ) {
     constructor(serverConfigStore: ServerConfigStore, httpClient: OkHttpClient = defaultOkHttpClient()) : this(
-        baseUrlProvider = {
-            val config = serverConfigStore.configFlow.first()
-            "http://${config.host}:${config.port}"
-        },
+        configProvider = { serverConfigStore.configFlow.first() },
         httpClient = httpClient,
     )
 
@@ -170,8 +168,17 @@ class WsSessionClient(
 
     private fun openSocket() {
         clientScope.launch {
-            val url = baseUrlProvider().replaceFirst("http", "ws") + "/ws/session"
-            val request = Request.Builder().url(url).build()
+            val config = configProvider()
+            config.connectProblem?.let { problem ->
+                giveUp(problem)
+                return@launch
+            }
+            val url = config.baseUrl.replaceFirst("http", "ws") + "/ws/session"
+            // ADR-0017: the token goes in the upgrade request's header, never the URL.
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", config.authorizationHeader)
+                .build()
             sessionReady = false
             Log.i(TAG, "opening socket to $url (attempt=$reconnectAttempt)")
             webSocket = httpClient.newWebSocket(request, Listener())
@@ -239,6 +246,12 @@ class WsSessionClient(
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             Log.w(TAG, "socket failure (stale=${isStale(webSocket)}, http=${response?.code})", t)
             if (isStale(webSocket)) return
+            if (response?.code == 401 || response?.code == 403) {
+                // A bad or revoked token won't get better by retrying.
+                this@WsSessionClient.webSocket = null
+                giveUp("The server rejected this device's token. Check it in Settings.")
+                return
+            }
             handleDisconnect()
         }
     }
@@ -281,6 +294,17 @@ class WsSessionClient(
             else -> return
         }
         clientScope.launch { _events.emit(event) }
+    }
+
+    /** Stop for good with [WsEvent.ConnectRefused]. */
+    private fun giveUp(message: String) {
+        Log.w(TAG, "giving up: $message")
+        explicitlyEnded = true
+        sessionReady = false
+        reconnectJob?.cancel()
+        _sessionActive.value = false
+        _sessionPhase.value = null
+        clientScope.launch { _events.emit(WsEvent.ConnectRefused(message)) }
     }
 
     private fun handleDisconnect() {

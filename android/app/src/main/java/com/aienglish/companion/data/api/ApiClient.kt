@@ -1,5 +1,6 @@
 package com.aienglish.companion.data.api
 
+import com.aienglish.companion.data.ServerConfig
 import com.aienglish.companion.data.ServerConfigStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -15,21 +16,18 @@ private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
 /** Typed client for `/characters`, `/scenarios` and `/conversations`
  * (`server/app/main.py`).
- * Reads the server address fresh on every call (via [baseUrlProvider]) so a
+ * Reads the server config fresh on every call (via [configProvider]) so a
  * user changing it in Settings (`STORY-05-10`) doesn't require restarting
- * the app. */
+ * the app. Every request carries the device token (ADR-0017). */
 class ApiClient(
-    private val baseUrlProvider: suspend () -> String,
+    private val configProvider: suspend () -> ServerConfig,
     private val httpClient: OkHttpClient = OkHttpClient(),
 ) {
     constructor(
         serverConfigStore: ServerConfigStore,
         httpClient: OkHttpClient = OkHttpClient(),
     ) : this(
-        baseUrlProvider = {
-            val config = serverConfigStore.configFlow.first()
-            "http://${config.host}:${config.port}"
-        },
+        configProvider = { serverConfigStore.configFlow.first() },
         httpClient = httpClient,
     )
 
@@ -80,9 +78,15 @@ class ApiClient(
     suspend fun deleteConversation(id: String): ApiResult<Unit> =
         toUnit(raw(request("DELETE", "/conversations/$id")))
 
-    private suspend fun request(method: String, path: String, jsonBody: String? = null): Request {
-        val url = "${baseUrlProvider()}$path"
-        val builder = Request.Builder().url(url)
+    /** The device this token belongs to — checks address and token together. */
+    suspend fun authMe(): ApiResult<AuthMe> = decoded(request("GET", "/auth/me"))
+
+    private suspend fun request(method: String, path: String, jsonBody: String? = null): Request? {
+        val config = configProvider()
+        if (config.connectProblem != null) return null
+        val builder = Request.Builder()
+            .url("${config.baseUrl}$path")
+            .header("Authorization", config.authorizationHeader)
         when (method) {
             "GET" -> builder.get()
             "DELETE" -> builder.delete()
@@ -93,7 +97,11 @@ class ApiClient(
         return builder.build()
     }
 
-    private suspend fun raw(request: Request): ApiResult<String> = withContext(Dispatchers.IO) {
+    private suspend fun raw(request: Request?): ApiResult<String> = withContext(Dispatchers.IO) {
+        if (request == null) {
+            val problem = configProvider().connectProblem ?: "Server is not configured."
+            return@withContext ApiResult.NetworkError(IllegalStateException(problem))
+        }
         try {
             httpClient.newCall(request).execute().use { response ->
                 val body = response.body?.string()
@@ -108,7 +116,7 @@ class ApiClient(
         }
     }
 
-    private suspend inline fun <reified T> decoded(request: Request): ApiResult<T> =
+    private suspend inline fun <reified T> decoded(request: Request?): ApiResult<T> =
         when (val result = raw(request)) {
             is ApiResult.Success -> try {
                 ApiResult.Success(json.decodeFromString<T>(result.data))

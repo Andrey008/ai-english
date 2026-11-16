@@ -84,6 +84,7 @@ fun VoiceSessionScreen(onClose: () -> Unit) {
                 is WsEvent.ConnectionLost -> errorMessage = "Connection lost — reconnecting…"
                 is WsEvent.Reconnecting -> errorMessage = "Reconnecting (attempt ${event.attempt})…"
                 is WsEvent.ReconnectFailed -> errorMessage = "Couldn't reconnect. Go back and continue the conversation again."
+                is WsEvent.ConnectRefused -> errorMessage = event.message
                 is WsEvent.SessionReady -> errorMessage = null
                 else -> Unit
             }

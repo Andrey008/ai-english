@@ -1,5 +1,6 @@
 package com.aienglish.companion.data.ws
 
+import com.aienglish.companion.data.ServerConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,6 +26,11 @@ import java.io.File
  * `ApiClientLiveTest`. Assumes the Gradle `test` task's working directory
  * is `android/app` (the default), hence the `../../` paths below.
  */
+/** Token from `server/scripts/devices.py create`, via `AI_ENGLISH_TOKEN`. */
+private val LOCAL_SERVER = ServerConfig(
+    host = "127.0.0.1", port = 8000, token = System.getenv("AI_ENGLISH_TOKEN").orEmpty(),
+)
+
 class WsSessionClientLiveTest {
 
     private val wavFile = File("../../poc/samples/test_input.wav")
@@ -60,7 +66,7 @@ class WsSessionClientLiveTest {
 
     @Test
     fun fullTurn_roundTrip() = runBlocking {
-        val client = WsSessionClient(baseUrlProvider = { "http://127.0.0.1:8000" })
+        val client = WsSessionClient(configProvider = { LOCAL_SERVER })
         val scope = CoroutineScope(Dispatchers.IO)
         val (events, job) = collectEvents(client, scope)
         try {
@@ -111,7 +117,7 @@ class WsSessionClientLiveTest {
 
     @Test
     fun scenarioId_opensWithExactHintBeforeListening() = runBlocking {
-        val client = WsSessionClient(baseUrlProvider = { "http://127.0.0.1:8000" })
+        val client = WsSessionClient(configProvider = { LOCAL_SERVER })
         val scope = CoroutineScope(Dispatchers.IO)
         val (events, job) = collectEvents(client, scope)
         try {
@@ -154,7 +160,7 @@ class WsSessionClientLiveTest {
 
     @Test
     fun reconnect_withinGraceWindow_resumesSameSession() = runBlocking {
-        val client = WsSessionClient(baseUrlProvider = { "http://127.0.0.1:8000" })
+        val client = WsSessionClient(configProvider = { LOCAL_SERVER })
         val scope = CoroutineScope(Dispatchers.IO)
         val (events, job) = collectEvents(client, scope)
         try {

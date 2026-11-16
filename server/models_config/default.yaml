@@ -84,6 +84,14 @@ vad:
     C1: 150
     native: 0
 
+# ADR-0017. Every route except /healthz needs `Authorization: Bearer
+# <token>`; tokens are per device, made with `scripts/devices.py create`.
+# Turning auth off is for a throwaway local run only.
+security:
+  auth_required: true
+  # FastAPI's /docs and /openapi.json.
+  api_docs: false
+
 persistence:
   # Relative to repo root, same convention as stt/tts paths above.
   db_path: server/data/ai_english.db

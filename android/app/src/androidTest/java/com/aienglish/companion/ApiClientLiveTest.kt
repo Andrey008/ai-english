@@ -1,5 +1,7 @@
 package com.aienglish.companion
 
+import androidx.test.platform.app.InstrumentationRegistry
+import com.aienglish.companion.data.ServerConfig
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aienglish.companion.data.api.ApiClient
 import com.aienglish.companion.data.api.ApiResult
@@ -27,7 +29,13 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ApiClientLiveTest {
 
-    private val client = ApiClient(baseUrlProvider = { "http://10.0.2.2:8000" })
+    private val client = ApiClient(configProvider = {
+        // Instrumentation arg: -Pandroid.testInstrumentationRunnerArguments.aiEnglishToken=<token>
+        ServerConfig(
+            host = "10.0.2.2", port = 8000,
+            token = InstrumentationRegistry.getArguments().getString("aiEnglishToken").orEmpty(),
+        )
+    })
 
     @Test
     fun listCharacters_includesSeededDefault() = runBlocking {

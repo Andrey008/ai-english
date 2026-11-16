@@ -277,3 +277,45 @@ class Database:
             (sessions,),
         )
         return {row["question_id"] for row in await cursor.fetchall()}
+
+    # --- devices (ADR-0017) -------------------------------------------------
+
+    async def create_device(self, name: str, token_hash: str) -> dict:
+        assert self._conn is not None
+        device_id = uuid.uuid4().hex[:12]
+        await self._conn.execute(
+            "INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)",
+            (device_id, name, token_hash, _now()),
+        )
+        await self._conn.commit()
+        return await self.get_device(device_id)
+
+    async def get_device(self, device_id: str) -> dict | None:
+        assert self._conn is not None
+        cursor = await self._conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_device_by_token_hash(self, token_hash: str) -> dict | None:
+        assert self._conn is not None
+        cursor = await self._conn.execute("SELECT * FROM devices WHERE token_hash = ?", (token_hash,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def list_devices(self) -> list[dict]:
+        assert self._conn is not None
+        cursor = await self._conn.execute("SELECT * FROM devices ORDER BY created_at")
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def touch_device(self, device_id: str) -> None:
+        assert self._conn is not None
+        await self._conn.execute("UPDATE devices SET last_used_at = ? WHERE id = ?", (_now(), device_id))
+        await self._conn.commit()
+
+    async def revoke_device(self, device_id: str) -> bool:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", (_now(), device_id)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0

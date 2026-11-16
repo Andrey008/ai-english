@@ -4,9 +4,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from pydantic import BaseModel, Field
 
+from app.auth import AuthMiddleware, config_flag
 from app.character_memory import CharacterMemoryService
 from app.claude_gateway import ClaudeGateway
 from app.config import get_config
@@ -28,8 +29,21 @@ logger = logging.getLogger("ai_english.server")
 def create_app() -> FastAPI:
     configure_logging()
     config = get_config()
-    app = FastAPI(title="AI English Voice Companion — Server")
+    security = config.get("security") or {}
+    # API docs list every route for whoever finds the server: off unless
+    # asked for (ADR-0017).
+    docs = config_flag(security.get("api_docs"), default=False)
+    app = FastAPI(
+        title="AI English Voice Companion — Server",
+        docs_url="/docs" if docs else None,
+        redoc_url=None,
+        openapi_url="/openapi.json" if docs else None,
+    )
     app.state.config = config
+    auth_required = config_flag(security.get("auth_required"), default=True)
+    app.add_middleware(AuthMiddleware, db_getter=lambda: app.state.db, enabled=auth_required)
+    if not auth_required:
+        logger.warning("auth_disabled", extra={"hint": "every route is open to anyone who can reach the port"})
     app.state.stt_service = STTService(config)
     app.state.tts_service = TTSService(config)
     app.state.conversation_engine = ConversationEngine(config)
@@ -88,6 +102,13 @@ def create_app() -> FastAPI:
     async def healthz() -> dict:
         logger.info("healthz_check")
         return {"status": "ok"}
+
+    @app.get("/auth/me")
+    async def auth_me(request: Request) -> dict:
+        """The device this token belongs to. Clients call it to check the
+        server address and token together."""
+        device = getattr(request.state, "device", None)
+        return {"device": device, "auth_required": auth_required}
 
     @app.websocket("/ws/session")
     async def ws_session(websocket: WebSocket) -> None:
