@@ -12,7 +12,7 @@ class FakeOllama:
         self.prewarms: list[list[dict]] = []
         self.cancelled = 0
 
-    async def chat(self, model, messages, stream=False, think=None, options=None):
+    async def chat(self, model, messages, stream=False, think=None, options=None, keep_alive=None):
         if stream:
             return self._stream("Sure thing. ")
         assert options == {"num_predict": 1}  # never a different num_ctx: that would reload the model

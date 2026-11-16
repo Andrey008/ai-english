@@ -1,6 +1,11 @@
 package com.aienglish.companion.ui.screens
 
 import androidx.compose.animation.animateColorAsState
+import kotlinx.coroutines.delay
+import com.aienglish.companion.data.ws.PrepareInfo
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -70,6 +75,7 @@ fun VoiceSessionScreen(onClose: () -> Unit) {
     val characterName by appContainer.voiceSessionLauncher.characterName.collectAsState()
     val sessionActive by appContainer.wsSessionClient.sessionActiveFlow.collectAsState()
     val sessionPhase by appContainer.wsSessionClient.sessionPhaseFlow.collectAsState()
+    val prepareInfo by appContainer.wsSessionClient.prepareInfoFlow.collectAsState()
     val transcript by appContainer.liveTranscript.entries.collectAsState()
     // Shared with STORY-05-09's Bluetooth TWS media-button handler (lives in
     // the foreground service) via AudioSessionController.mutedFlow, not
@@ -161,7 +167,10 @@ fun VoiceSessionScreen(onClose: () -> Unit) {
                 }
             }
 
-            if (transcript.isEmpty() && sessionPhase != SessionPhase.PROCESSING) {
+            val preparing = prepareInfo
+            if (sessionActive && sessionPhase == SessionPhase.PREPARING && preparing != null) {
+                PreparingPanel(characterName, preparing, Modifier.weight(1f))
+            } else if (transcript.isEmpty() && sessionPhase != SessionPhase.PROCESSING) {
                 EmptyCallHint(characterName, sessionActive, sessionPhase, Modifier.weight(1f))
             } else {
                 ChatTranscript(
@@ -183,6 +192,7 @@ private fun StatusLine(phase: SessionPhase?, active: Boolean, muted: Boolean) {
     val (label, color) = when {
         !active -> "Conversation ended" to MaterialTheme.colorScheme.onSurfaceVariant
         muted && phase == SessionPhase.LISTENING -> "Muted" to MaterialTheme.colorScheme.error
+        phase == SessionPhase.PREPARING -> "Getting ready…" to MaterialTheme.colorScheme.onSurfaceVariant
         phase == SessionPhase.LISTENING -> "Listening — your turn" to Color(0xFF2E9D5B)
         phase == SessionPhase.PROCESSING -> "Thinking…" to MaterialTheme.colorScheme.tertiary
         phase == SessionPhase.SPEAKING -> "Speaking…" to MaterialTheme.colorScheme.primary
@@ -240,6 +250,61 @@ private fun EmptyCallHint(name: String, active: Boolean, phase: SessionPhase?, m
                 else -> "Say hello — $name is listening."
             },
             style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+    }
+}
+
+/** Fill for the "getting ready" bar: the server only gives an estimate,
+ * so the bar reaches 90% at [expectedS] and then creeps toward 99% until
+ * the session actually opens (the panel then disappears). */
+internal fun prepareProgress(elapsedS: Double, expectedS: Double): Float {
+    val expected = expectedS.coerceAtLeast(1.0)
+    return if (elapsedS < expected) {
+        (0.9 * elapsedS / expected).toFloat()
+    } else {
+        (0.9 + 0.09 * (1 - kotlin.math.exp(-(elapsedS - expected) / expected))).toFloat()
+    }
+}
+
+/** Session start while the server warms the model up: avatar, a progress
+ * bar with a percentage, and what is happening. The mic opens after. */
+@Composable
+private fun PreparingPanel(name: String, info: PrepareInfo, modifier: Modifier) {
+    var progress by remember(info) { mutableFloatStateOf(0f) }
+    LaunchedEffect(info) {
+        while (true) {
+            val elapsedS = (System.currentTimeMillis() - info.startedAtMs) / 1000.0
+            progress = prepareProgress(elapsedS, info.expectedS)
+            delay(100)
+        }
+    }
+    val shown by animateFloatAsState(progress, label = "prepare")
+    Column(
+        modifier = modifier.fillMaxWidth().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Avatar(name, size = 96.dp)
+        Text(
+            "$name is getting ready…",
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.padding(top = 16.dp),
+        )
+        LinearProgressIndicator(
+            progress = { shown },
+            modifier = Modifier.fillMaxWidth().padding(top = 24.dp),
+        )
+        Text(
+            "${(shown * 100).toInt()}%",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        Text(
+            if (info.modelLoading) "Loading the model into memory — the first conversation after a break takes a few seconds longer."
+            else "Reading the character and your conversation.",
+            style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp),
         )

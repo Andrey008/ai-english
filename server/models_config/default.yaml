@@ -42,6 +42,15 @@ llm:
   # Re-cache history + the reply just generated while it's being spoken,
   # so the next turn doesn't re-read the reply (ADR-0013: ~-0.4s TTFA).
   reply_prewarm: true
+  # How long Ollama keeps the model in memory after the last request
+  # (Ollama's own default is 5m, which made the first session after a
+  # short break reload 16 GB: cold session start 6-16s vs 0.4s warm).
+  # It holds ~16 GB of the Mac's 48 GB while loaded.
+  keep_alive: 1h
+  # Only for the client's "getting ready" progress estimate: prompt
+  # prefill speed and the last-known model load time (updated live).
+  prefill_tok_s: 135
+  model_load_s: 10   # measured 2026-11-16: cold load 10.4s
   # In-session context compaction (app/conversation_engine.py): once the
   # history estimate passes trigger_tokens, older turns are summarized in
   # the background and the last keep_recent_messages stay verbatim.

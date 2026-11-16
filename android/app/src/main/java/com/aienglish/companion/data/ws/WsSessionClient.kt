@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
@@ -88,6 +90,9 @@ class WsSessionClient(
     // immediately instead of waiting for the next push.
     private val _sessionPhase = MutableStateFlow<SessionPhase?>(null)
     val sessionPhaseFlow: StateFlow<SessionPhase?> = _sessionPhase.asStateFlow()
+
+    private val _prepareInfo = MutableStateFlow<PrepareInfo?>(null)
+    val prepareInfoFlow: StateFlow<PrepareInfo?> = _prepareInfo.asStateFlow()
 
     @Volatile private var webSocket: WebSocket? = null
     // Only true between this socket's `session_ready` and its disconnect.
@@ -270,10 +275,20 @@ class WsSessionClient(
             }
             "session_state" -> {
                 val phase = when (obj["state"]?.jsonPrimitive?.content) {
+                    "preparing" -> SessionPhase.PREPARING
                     "listening" -> SessionPhase.LISTENING
                     "processing" -> SessionPhase.PROCESSING
                     "speaking" -> SessionPhase.SPEAKING
                     else -> return
+                }
+                _prepareInfo.value = if (phase == SessionPhase.PREPARING) {
+                    PrepareInfo(
+                        expectedS = obj["expected_s"]?.jsonPrimitive?.doubleOrNull ?: 10.0,
+                        modelLoading = obj["model_loading"]?.jsonPrimitive?.booleanOrNull ?: false,
+                        startedAtMs = System.currentTimeMillis(),
+                    )
+                } else {
+                    null
                 }
                 _sessionPhase.value = phase
                 WsEvent.SessionState(phase)

@@ -83,6 +83,11 @@ def create_app() -> FastAPI:
         await app.state.tts_service.start()
         await app.state.conversation_engine.check_ready()
         logger.info("conversation_engine_ready", extra={"model": config["llm"]["model"]})
+        # Load the model now, not on the first conversation (keep_alive
+        # then keeps it loaded between sessions).
+        warm = asyncio.create_task(app.state.conversation_engine.warm_model())
+        app.state.background_tasks.add(warm)
+        warm.add_done_callback(app.state.background_tasks.discard)
         app.state.preset_store.ensure_seed()
         logger.info("preset_store_ready", extra={"count": len(app.state.preset_store.list())})
         if app.state.claude_gateway.configured:
@@ -109,6 +114,19 @@ def create_app() -> FastAPI:
         server address and token together."""
         device = getattr(request.state, "device", None)
         return {"device": device, "auth_required": auth_required}
+
+    @app.post("/warmup", status_code=202)
+    async def warmup() -> dict:
+        """The app calls this when it opens, so the model is in memory by
+        the time a conversation starts. Answers at once; the load (~10s
+        cold) runs in the background."""
+        engine = app.state.conversation_engine
+        if await engine.model_loaded():
+            return {"model_loaded": True}
+        task = asyncio.create_task(engine.warm_model())
+        app.state.background_tasks.add(task)
+        task.add_done_callback(app.state.background_tasks.discard)
+        return {"model_loaded": False}
 
     @app.websocket("/ws/session")
     async def ws_session(websocket: WebSocket) -> None:

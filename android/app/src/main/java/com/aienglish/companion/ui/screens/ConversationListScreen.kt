@@ -108,6 +108,9 @@ fun ConversationListScreen(
 
     // Also re-runs when a session ends; the server writes that
     // conversation's title a few seconds later, hence the second pass.
+    // The app opening: load the model while the user picks what to do.
+    LaunchedEffect(Unit) { appContainer.apiClient.warmup() }
+
     LaunchedEffect(sessionActive) {
         refresh()
         if (!sessionActive) {

@@ -85,7 +85,17 @@ class ConversationEngine:
         self._histories: dict[str, list[dict]] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._prompt_head: str | None = None
-        self._prewarm_tasks: set[asyncio.Task] = set()
+        # Session-start prewarm per session: the WS session waits on it
+        # before opening the mic (the client shows a loader meanwhile).
+        self._prewarm_tasks: dict[str, asyncio.Task] = {}
+        self._prewarm_estimates: dict[str, int] = {}
+        # Ollama unloads an idle model after 5 min by default, and loading
+        # gemma2:27b again costs most of a cold session start. Every
+        # request carries this instead.
+        self._keep_alive = str(config["llm"].get("keep_alive", "1h"))
+        self._prefill_tok_s = float(config["llm"].get("prefill_tok_s", 135))
+        self._load_s_guess = float(config["llm"].get("model_load_s", 10))
+        self._load_lock = asyncio.Lock()
         compaction = config["llm"].get("compaction", {})
         self._compact_trigger_tokens = int(compaction.get("trigger_tokens", 0))
         # A resumed history is prefilled cold at session start (~135 tok/s
@@ -151,6 +161,7 @@ class ConversationEngine:
             "conversation_session_started",
             extra={"session_id": session_id, "restored_messages": len(history) - 1 if restored else 0},
         )
+        self._prewarm_estimates[session_id] = _estimate_tokens(history)
         if restored:
             # Not cancelled by the first user turn (unlike the reply
             # prewarm): Ollama runs one request at a time, so that turn
@@ -168,8 +179,48 @@ class ConversationEngine:
         else:
             return
         task = asyncio.get_running_loop().create_task(coro)
-        self._prewarm_tasks.add(task)
-        task.add_done_callback(self._prewarm_tasks.discard)
+        self._prewarm_tasks[session_id] = task
+        task.add_done_callback(
+            lambda t: self._prewarm_tasks.pop(session_id, None)
+            if self._prewarm_tasks.get(session_id) is t else None
+        )
+
+    async def model_loaded(self) -> bool:
+        """Whether Ollama has the model in memory right now."""
+        try:
+            resp = await self._client.ps()
+        except (ollama.ResponseError, ConnectionError, OSError):
+            return False
+        return any(m.model == self._model or m.name == self._model for m in resp.models)
+
+    async def warm_model(self) -> dict:
+        """Load the model into memory ahead of a session (server start,
+        the app opening). An empty prompt makes Ollama load the model and
+        return without generating anything."""
+        async with self._load_lock:
+            if await self.model_loaded():
+                return {"loaded": True, "load_s": 0.0}
+            started = time.monotonic()
+            try:
+                await self._client.generate(model=self._model, prompt="", keep_alive=self._keep_alive)
+            except (ollama.ResponseError, ConnectionError, OSError) as exc:
+                logger.warning("llm_warm_failed", extra={"error": str(exc)})
+                return {"loaded": False, "error": str(exc)}
+            load_s = round(time.monotonic() - started, 2)
+            self._load_s_guess = load_s
+            logger.info("llm_model_loaded", extra={"model": self._model, "load_s": load_s})
+            return {"loaded": True, "load_s": load_s}
+
+    def prewarm_pending(self, session_id: str) -> asyncio.Task | None:
+        task = self._prewarm_tasks.get(session_id)
+        return task if task is not None and not task.done() else None
+
+    def estimate_prepare_s(self, session_id: str, model_loaded: bool) -> float:
+        """Rough time until the session's prewarm finishes, so the client's
+        loader can fill at a believable pace. Not a promise."""
+        tokens = self._prewarm_estimates.get(session_id, 600)
+        load = 0.0 if model_loaded else self._load_s_guess
+        return round(load + tokens / self._prefill_tok_s, 1)
 
     def restore_history(self, base_prompt: str, turns: list[dict], summary: str | None = None) -> tuple[list[dict], str]:
         """LLM history for a resumed conversation from its stored `turns`
@@ -209,7 +260,7 @@ class ConversationEngine:
         started = time.monotonic()
         try:
             resp = await self._client.chat(
-                model=self._model,
+                model=self._model, keep_alive=self._keep_alive,
                 messages=messages + [
                     {"role": "user", "content": _WRAP_UP_WITH_NOTES if with_notes else _WRAP_UP_TITLE}
                 ],
@@ -247,7 +298,7 @@ class ConversationEngine:
         started = time.monotonic()
         try:
             await self._client.generate(
-                model=self._model, prompt=prompt_prefix, raw=True, options={"num_predict": 1}
+                model=self._model, keep_alive=self._keep_alive, prompt=prompt_prefix, raw=True, options={"num_predict": 1}
             )
         except (ollama.ResponseError, ConnectionError, OSError) as exc:
             logger.warning("llm_prewarm_failed", extra={"session_id": session_id, "error": str(exc)})
@@ -263,7 +314,7 @@ class ConversationEngine:
         started = time.monotonic()
         try:
             await self._client.chat(
-                model=self._model, messages=messages, stream=False, think=False, options={"num_predict": 1}
+                model=self._model, keep_alive=self._keep_alive, messages=messages, stream=False, think=False, options={"num_predict": 1}
             )
         except (ollama.ResponseError, ConnectionError, OSError) as exc:
             logger.warning("llm_prewarm_failed", extra={"session_id": session_id, "error": str(exc)})
@@ -299,6 +350,7 @@ class ConversationEngine:
         self._start_reply_prewarm(session_id, history)
 
     def end_session(self, session_id: str) -> None:
+        self._prewarm_estimates.pop(session_id, None)
         for tasks in (self._compaction_tasks, self._reply_prewarm_tasks):
             task = tasks.pop(session_id, None)
             if task is not None:
@@ -334,7 +386,7 @@ class ConversationEngine:
 
         try:
             stream = await self._client.chat(
-                model=self._model, messages=history, stream=True, think=False
+                model=self._model, keep_alive=self._keep_alive, messages=history, stream=True, think=False
             )
         except (ollama.ResponseError, ConnectionError, OSError) as exc:
             history.pop()  # don't leave a dangling user turn with no reply
@@ -410,7 +462,7 @@ class ConversationEngine:
         started = time.monotonic()
         try:
             await self._client.chat(
-                model=self._model, messages=messages, stream=False, think=False, options={"num_predict": 1}
+                model=self._model, keep_alive=self._keep_alive, messages=messages, stream=False, think=False, options={"num_predict": 1}
             )
         except (ollama.ResponseError, ConnectionError, OSError) as exc:
             logger.warning("llm_reply_prewarm_failed", extra={"session_id": session_id, "error": str(exc)})
@@ -497,7 +549,7 @@ class ConversationEngine:
                     extra={"session_id": session_id, "est_tokens": tokens_before, "messages": len(history)},
                 )
                 resp = await self._client.chat(
-                    model=self._model,
+                    model=self._model, keep_alive=self._keep_alive,
                     messages=history + [{"role": "user", "content": _COMPACTION_REQUEST}],
                     stream=False,
                     think=False,
@@ -525,7 +577,7 @@ class ConversationEngine:
             expected_len = len(history)
             prewarm_started = time.monotonic()
             await self._client.chat(
-                model=self._model, messages=compacted, stream=False, think=False, options={"num_predict": 1}
+                model=self._model, keep_alive=self._keep_alive, messages=compacted, stream=False, think=False, options={"num_predict": 1}
             )
             if self._histories.get(session_id) is not history or len(history) != expected_len:
                 return  # session ended or moved on meanwhile; retry after the next reply

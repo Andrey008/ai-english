@@ -49,6 +49,13 @@ sealed class WsEvent {
     data class ConnectRefused(val message: String) : WsEvent()
 }
 
-enum class SessionPhase { LISTENING, PROCESSING, SPEAKING }
+/** PREPARING: only at session start, while the server warms the LLM up
+ * (the mic stays closed until the next phase). */
+enum class SessionPhase { PREPARING, LISTENING, PROCESSING, SPEAKING }
+
+/** Details of [SessionPhase.PREPARING]: [expectedS] is the server's rough
+ * estimate for a progress bar, [modelLoading] means the model itself is
+ * being loaded into memory (the slow, ~10s case). */
+data class PrepareInfo(val expectedS: Double, val modelLoading: Boolean, val startedAtMs: Long)
 
 enum class BoundaryPhase { START, END }

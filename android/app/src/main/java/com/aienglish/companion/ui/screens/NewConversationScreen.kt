@@ -90,6 +90,8 @@ fun NewConversationScreen(onBack: () -> Unit, onStarted: () -> Unit) {
     var useMemory by remember { mutableStateOf(true) }
     val forcePhoneMic by appContainer.audioPrefsStore.forcePhoneMicFlow.collectAsState(initial = false)
 
+    LaunchedEffect(Unit) { appContainer.apiClient.warmup() }
+
     LaunchedEffect(Unit) {
         when (val result = appContainer.apiClient.listCharacters()) {
             is ApiResult.Success -> characters = result.data

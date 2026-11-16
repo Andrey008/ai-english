@@ -47,6 +47,11 @@ Client -> Server:
 Server -> Client:
 - `{"type": "session_ready", "proto_version": 1, "session_id": "...", "reconnected": bool}`
 - `{"type": "session_state", "state": "listening" | "processing" | "speaking"}`
+- `{"type": "session_state", "state": "preparing", "expected_s": 9.5, "model_loading": bool}`:
+  only at session start, only if the LLM prewarm takes longer than 0.5s.
+  The mic stays closed until the next state; `expected_s` is a rough
+  estimate for a progress bar, and `model_loading` means the model itself
+  is being loaded into memory.
 - `{"type": "transcript_final", "text": "..."}`
 - `{"type": "response_text_chunk", "text": "...", "sentence_index": N}`
 - `{"type": "audio_chunk_boundary", "phase": "start" | "end", "sentence_index": N}`
@@ -126,6 +131,10 @@ def is_noise_hallucination(transcript: str, audio_bytes: int) -> bool:
 
 
 DEBUG_AUDIO_DIR = resolve_repo_path("server/data/debug_audio")
+# Session-start prewarm: waits shorter than this aren't shown to the user;
+# past PREPARE_MAX_S the session opens anyway (the first reply then waits).
+PREPARE_SILENT_S = 0.5
+PREPARE_MAX_S = 90.0
 
 
 def _save_debug_audio(session_id: str, pcm: bytes) -> str | None:
@@ -464,6 +473,7 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             segmenter.reset()
 
     try:
+        await _wait_until_prepared(websocket, conversation_engine, session_id)
         if opening_text and not claim.is_reconnect:
             await websocket.send_json({"type": "session_state", "state": "speaking"})
             await _speak_text(websocket, tts_service, session_id, opening_text, voice_id, clock)
@@ -598,6 +608,36 @@ async def _after_session(app, session_id: str, history: list[dict] | None, prese
             )
     except Exception:
         logger.exception("ws_after_session_error", extra={"session_id": session_id})
+
+
+async def _wait_until_prepared(websocket, conversation_engine, session_id: str) -> None:
+    """Hold the mic closed until the session-start prewarm is done, so the
+    first reply doesn't queue behind it (cold: 6-16s; warm: ~0.4s). Short
+    waits pass silently; a longer one is announced as the `preparing`
+    state with a time estimate the client turns into a progress bar."""
+    task = conversation_engine.prewarm_pending(session_id)
+    if task is None:
+        return
+    started = time.monotonic()
+    done, _ = await asyncio.wait({task}, timeout=PREPARE_SILENT_S)
+    if done:
+        return
+    loaded = await conversation_engine.model_loaded()
+    expected_s = conversation_engine.estimate_prepare_s(session_id, loaded)
+    await websocket.send_json({
+        "type": "session_state", "state": "preparing",
+        "expected_s": expected_s, "model_loading": not loaded,
+    })
+    # shield: a timeout must not cancel the prewarm itself.
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=PREPARE_MAX_S)
+    except asyncio.TimeoutError:
+        logger.warning("ws_prepare_timeout", extra={"session_id": session_id})
+    logger.info(
+        "ws_session_prepared",
+        extra={"session_id": session_id, "wait_s": round(time.monotonic() - started, 2),
+               "expected_s": expected_s, "model_was_loaded": loaded},
+    )
 
 
 async def _close_quietly(websocket) -> None:

@@ -78,6 +78,11 @@ class ApiClient(
     suspend fun deleteConversation(id: String): ApiResult<Unit> =
         toUnit(raw(request("DELETE", "/conversations/$id")))
 
+    /** Ask the server to load the model now (it answers at once, the load
+     * runs in the background) so a conversation started soon after
+     * doesn't wait ~10s for it. Fire and forget. */
+    suspend fun warmup(): ApiResult<Unit> = toUnit(raw(request("POST", "/warmup", "")))
+
     /** The device this token belongs to — checks address and token together. */
     suspend fun authMe(): ApiResult<AuthMe> = decoded(request("GET", "/auth/me"))
 

@@ -42,6 +42,7 @@ Updated memory:"""
 class CharacterMemoryService:
     def __init__(self, config: dict[str, Any], db: Any):
         self._model = config["llm"]["model"]
+        self._keep_alive = str(config["llm"].get("keep_alive", "1h"))
         self._db = db
         self._client = ollama.AsyncClient()
 
@@ -66,6 +67,7 @@ class CharacterMemoryService:
         try:
             resp = await self._client.chat(
                 model=self._model,
+                keep_alive=self._keep_alive,
                 messages=[{"role": "user", "content": prompt}],
                 stream=False,
                 think=False,

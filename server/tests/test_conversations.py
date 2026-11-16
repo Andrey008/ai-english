@@ -15,7 +15,7 @@ class FakeOllama:
         if not block:
             self.release.set()
 
-    async def chat(self, model, messages, stream=False, think=None, options=None):
+    async def chat(self, model, messages, stream=False, think=None, options=None, keep_alive=None):
         if stream:
             return self._stream("Sure thing. ")
         self.calls.append([dict(m) for m in messages])
@@ -86,7 +86,7 @@ def test_resumed_session_prewarms_whole_history_and_first_turn_waits_for_it():
         await asyncio.sleep(0)
         turn = asyncio.create_task(_reply(engine, "s", "next"))
         await asyncio.sleep(0.01)
-        prewarm_alive = any(not t.done() for t in engine._prewarm_tasks)
+        prewarm_alive = any(not t.done() for t in engine._prewarm_tasks.values())
         fake.release.set()
         await turn
         return fake, prewarm_alive, engine
