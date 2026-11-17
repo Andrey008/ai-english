@@ -340,7 +340,7 @@ private fun guideSteps(): List<GuideStep> = listOf(
         colors = listOf(Color(0xFFEF6C00), Color(0xFFFFA726)),
         illustration = {
             MockCard(modifier = Modifier.width(250.dp)) {
-                MockField("TTS voice ID", "en_GB-alan-medium")
+                MockField("TTS voice ID", "bm_george")
                 Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(top = 10.dp)) {
                     listOf(10, 22, 14, 30, 18, 26, 12, 24, 16, 28, 10, 20, 14).forEach { h ->
@@ -350,11 +350,16 @@ private fun guideSteps(): List<GuideStep> = listOf(
             }
         },
         body = {
-            Para("Type one of the voices installed on your server into “TTS voice ID”, and set “Accent” to match:")
-            OptionRow("Amy · American", "en_US-amy-medium", "Female, friendly and clear. Accent: en_US.")
-            OptionRow("Lessac · American", "en_US-lessac-medium", "Female, calm and neutral. Accent: en_US.")
-            OptionRow("Alan · British", "en_GB-alan-medium", "Male, relaxed British English. Accent: en_GB.")
-            Para("Leave the TTS engine on Piper — it's fast enough for a live conversation.")
+            Para("Set the TTS engine to Kokoro, type one of these voices into “TTS voice ID”, and set “Accent” to match:")
+            OptionRow("Heart · American", "af_heart", "Female, warm and expressive. Accent: en_US.")
+            OptionRow("Bella · American", "af_bella", "Female, bright and lively. Accent: en_US.")
+            OptionRow("Jessica · American", "af_jessica", "Female, casual and relaxed. Accent: en_US.")
+            OptionRow("Aoede · American", "af_aoede", "Female, soft and calm. Accent: en_US.")
+            OptionRow("Adam · American", "am_adam", "Male, deep and steady. Accent: en_US.")
+            OptionRow("Liam · American", "am_liam", "Male, young and casual. Accent: en_US.")
+            OptionRow("Emma · British", "bf_emma", "Female, clear British English. Accent: en_GB.")
+            OptionRow("George · British", "bm_george", "Male, classic British English. Accent: en_GB.")
+            Para("Piper (en_US-amy-medium, en_US-lessac-medium, en_GB-alan-medium) is the faster, more robotic fallback.")
             Tip("Practising for a trip or a job abroad? Choose the accent you'll actually hear there.")
         },
     ),

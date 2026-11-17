@@ -21,6 +21,12 @@ set in `models_config/default.yaml`):
   committed, the `.onnx` models (~60MB each) are not — download the
   matching `en_US-lessac-medium`, `en_US-amy-medium`, `en_GB-alan-medium`
   models from the `rhasspy/piper-voices` release on Hugging Face.
+- **Kokoro model** in `models/kokoro/` (gitignored, ADR-0018): the characters' voices. Without it they fall back to Piper.
+  ```
+  mkdir -p models/kokoro && cd models/kokoro
+  base=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0
+  curl -LO $base/kokoro-v1.0.onnx && curl -LO $base/voices-v1.0.bin
+  ```
 
 ## Run
 

@@ -69,7 +69,7 @@ fun CharacterCreatorScreen(characterId: String?, onDone: () -> Unit, onOpenGuide
     var accent by remember { mutableStateOf("en_US") }
     var roleDescription by remember { mutableStateOf("") }
     var ttsVoiceId by remember { mutableStateOf("") }
-    var ttsEngine by remember { mutableStateOf(TtsEngine.PIPER) }
+    var ttsEngine by remember { mutableStateOf(TtsEngine.KOKORO) }
     var temperature by remember { mutableFloatStateOf(0.7f) }
     var correctionStyle by remember { mutableStateOf(CorrectionStyle.OFF) }
     var memoryEnabled by remember { mutableStateOf(true) }
@@ -215,7 +215,7 @@ fun CharacterCreatorScreen(characterId: String?, onDone: () -> Unit, onOpenGuide
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
             )
-            EnumChoiceField("TTS engine", listOf(TtsEngine.PIPER to "Piper", TtsEngine.XTTS to "XTTS"), ttsEngine) { ttsEngine = it }
+            EnumChoiceField("TTS engine", listOf(TtsEngine.KOKORO to "Kokoro", TtsEngine.PIPER to "Piper", TtsEngine.XTTS to "XTTS"), ttsEngine) { ttsEngine = it }
             Text(
                 "Temperature: ${"%.2f".format(temperature)}",
                 style = MaterialTheme.typography.labelLarge,

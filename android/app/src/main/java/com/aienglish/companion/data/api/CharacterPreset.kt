@@ -34,6 +34,7 @@ enum class Gender {
 @Serializable
 enum class TtsEngine {
     @SerialName("piper") PIPER,
+    @SerialName("kokoro") KOKORO,
     @SerialName("xtts") XTTS,
 }
 

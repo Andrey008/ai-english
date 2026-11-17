@@ -7,6 +7,11 @@ or stand up Piper's own `http_server` module (needs Flask, redundant
 with the FastAPI process we already have), this loads voices in-process
 via `piper.voice.PiperVoice` and keeps them warm for the server's
 lifetime — no subprocess, no model reload per call.
+
+Kokoro (ADR-0018) is the second engine: much more natural voices, all
+in one ~330MB ONNX model + one voices file, CPU-only (it doesn't compete
+with Ollama for the GPU). ~0.4s per sentence vs Piper's ~0.06s. A
+character picks its engine with `tts_engine`; Piper stays the fallback.
 """
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ import logging
 import re
 import threading
 import unicodedata
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 import numpy as np
@@ -66,6 +72,61 @@ class TTSServiceError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class Voice:
+    engine: str  # "piper" | "kokoro"
+    voice_id: str
+
+
+# Kokoro voice ids are `<accent><gender>_<name>`: a = American, b = British.
+def _kokoro_lang(voice_id: str) -> str:
+    return "en-gb" if voice_id.startswith("b") else "en-us"
+
+
+# Send a sentence in pieces of about this long, like Piper's chunks, so
+# the client starts playing and the playback clock advances smoothly.
+KOKORO_CHUNK_S = 0.25
+
+
+class KokoroEngine:
+    def __init__(self, config: dict[str, Any]):
+        self._model_path = resolve_repo_path(config["model_path"])
+        self._voices_path = resolve_repo_path(config["voices_path"])
+        self._speed = float(config.get("speed", 1.0))
+        self._kokoro = None
+        self._voices: frozenset[str] = frozenset()
+        # One synthesis at a time: parallel ONNX runs only fight over the
+        # same CPU cores and make every sentence slower.
+        self._run_lock = threading.Lock()
+
+    @property
+    def available(self) -> bool:
+        return self._model_path.exists() and self._voices_path.exists()
+
+    def load(self) -> None:
+        from kokoro_onnx import Kokoro
+
+        self._kokoro = Kokoro(str(self._model_path), str(self._voices_path))
+        self._voices = frozenset(self._kokoro.get_voices())
+        self._synth("Hello.", "af_heart")  # the first run is several times slower
+
+    def has_voice(self, voice_id: str) -> bool:
+        return voice_id in self._voices
+
+    def _synth(self, text: str, voice_id: str) -> tuple[np.ndarray, int]:
+        with self._run_lock:
+            return self._kokoro.create(text, voice=voice_id, speed=self._speed, lang=_kokoro_lang(voice_id))
+
+    def synthesize(self, text: str, voice_id: str):
+        """Yields 16-bit PCM at OUTPUT_SAMPLE_RATE (blocking; run in a thread)."""
+        audio, sample_rate = self._synth(text, voice_id)
+        pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+        pcm = _to_output_rate(pcm, sample_rate)
+        step = int(OUTPUT_SAMPLE_RATE * KOKORO_CHUNK_S) * 2
+        for i in range(0, len(pcm), step):
+            yield pcm[i:i + step]
+
+
 class TTSService:
     def __init__(self, config: dict[str, Any]):
         tts_config = config["tts"]
@@ -73,11 +134,30 @@ class TTSService:
         self._default_voice_id = tts_config["voice"]
         self._voices: dict[str, PiperVoice] = {}
         self._lock = asyncio.Lock()
+        kokoro_config = tts_config.get("kokoro")
+        self._kokoro = KokoroEngine(kokoro_config) if kokoro_config else None
+        self._kokoro_ready = False
 
     async def start(self) -> None:
         logger.info("tts_service_starting", extra={"default_voice": self._default_voice_id})
         await self._get_voice(self._default_voice_id)
-        logger.info("tts_service_ready", extra={"loaded_voices": list(self._voices)})
+        if self._kokoro is not None:
+            if self._kokoro.available:
+                await asyncio.to_thread(self._kokoro.load)
+                self._kokoro_ready = True
+            else:
+                logger.warning("tts_kokoro_model_missing", extra={"fallback": self._default_voice_id})
+        logger.info("tts_service_ready", extra={"loaded_voices": list(self._voices), "kokoro": self._kokoro_ready})
+
+    def resolve(self, engine: str | None, voice_id: str | None) -> Voice:
+        """The voice a character asked for, or the default Piper voice if
+        that engine/voice isn't available here (never fail a session over it)."""
+        if engine == "kokoro" and voice_id:
+            if self._kokoro_ready and self._kokoro.has_voice(voice_id):
+                return Voice("kokoro", voice_id)
+            logger.warning("tts_voice_unavailable", extra={"engine": engine, "voice_id": voice_id})
+            return Voice("piper", self._default_voice_id)
+        return Voice("piper", voice_id or self._default_voice_id)
 
     async def stop(self) -> None:
         self._voices.clear()
@@ -100,17 +180,25 @@ class TTSService:
             return voice
 
     async def synthesize_stream(
-        self, text: str, voice_id: str | None = None
+        self, text: str, voice: Voice | str | None = None
     ) -> AsyncIterator[bytes]:
-        """Stream 16-bit PCM/16kHz audio chunks for `text` from an already-warm voice."""
-        voice = await self._get_voice(voice_id or self._default_voice_id)
+        """Stream 16-bit PCM/16kHz audio chunks for `text` from an already-warm
+        voice. A plain string is a Piper voice id."""
+        if not isinstance(voice, Voice):
+            voice = Voice("piper", voice or self._default_voice_id)
+        if voice.engine == "kokoro":
+            chunks = lambda: self._kokoro.synthesize(text, voice.voice_id)  # noqa: E731
+        else:
+            piper_voice = await self._get_voice(voice.voice_id)
+            chunks = lambda: (  # noqa: E731
+                _to_output_rate(c.audio_int16_bytes, c.sample_rate) for c in piper_voice.synthesize(text)
+            )
         queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
         def worker() -> None:
             try:
-                for chunk in voice.synthesize(text):
-                    pcm = _to_output_rate(chunk.audio_int16_bytes, chunk.sample_rate)
+                for pcm in chunks():
                     loop.call_soon_threadsafe(queue.put_nowait, pcm)
             except Exception as exc:  # noqa: BLE001 — surfaced to the async caller below
                 loop.call_soon_threadsafe(queue.put_nowait, exc)
@@ -124,5 +212,5 @@ class TTSService:
             if item is _SENTINEL:
                 return
             if isinstance(item, Exception):
-                raise TTSServiceError(f"Piper synthesis failed: {item}") from item
+                raise TTSServiceError(f"{voice.engine} synthesis failed: {item}") from item
             yield item

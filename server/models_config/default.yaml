@@ -72,6 +72,14 @@ tts:
   # Reuses the PoC's already-downloaded Piper voice models (.onnx +
   # .onnx.json), same rationale as stt.whisper_server_bin — see ADR-0007.
   voices_dir: poc/voices
+  # Second engine (ADR-0018), picked per character with `tts_engine: kokoro`.
+  # Model files: github.com/thewh1teagle/kokoro-onnx releases, tag
+  # model-files-v1.0 (gitignored /models/). Missing files → characters
+  # fall back to `voice` above.
+  kokoro:
+    model_path: models/kokoro/kokoro-v1.0.onnx
+    voices_path: models/kokoro/voices-v1.0.bin
+    speed: 1.0
 
 vad:
   engine: silero

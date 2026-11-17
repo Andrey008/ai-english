@@ -371,7 +371,7 @@ async def handle_ws_session(websocket: WebSocket) -> None:
     await websocket.send_json(ready)
 
     segmenter = TurnSegmenter(app.state.config)
-    voice_id = preset.tts_voice_id if preset else None
+    voice_id = tts_service.resolve(preset.tts_engine, preset.tts_voice_id) if preset else None
     clean_end = False
     turn_task: asyncio.Task | None = None
     clock = PlaybackClock()
@@ -661,7 +661,7 @@ async def _speak_sentence(
     )
     first_audio_at = None
     try:
-        async for pcm_chunk in tts_service.synthesize_stream(text, voice_id=voice_id):
+        async for pcm_chunk in tts_service.synthesize_stream(text, voice=voice_id):
             await websocket.send_bytes(pcm_chunk)
             if clock is not None:
                 clock.add(len(pcm_chunk))
