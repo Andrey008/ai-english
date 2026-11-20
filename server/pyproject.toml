@@ -19,6 +19,8 @@ dependencies = [
 
 [tool.uv]
 package = false
+# `menubar` (scripts/menubar.py) too, so a plain `uv run`/`uv sync` keeps rumps installed.
+default-groups = ["dev", "menubar"]
 
 [dependency-groups]
 bench = [
@@ -26,4 +28,8 @@ bench = [
 ]
 dev = [
     "pytest>=9.2.0",
+]
+menubar = [
+    "psutil>=7.2.2",
+    "rumps>=0.4.0",
 ]

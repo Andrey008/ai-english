@@ -40,6 +40,24 @@ Then `curl http://127.0.0.1:8000/healthz` → `{"status": "ok"}`.
 LAN or Tailscale add `--host 0.0.0.0`. Behind a tunnel or reverse proxy,
 keep `--host 127.0.0.1` and point the tunnel at `http://127.0.0.1:8000`.
 
+### Menu-bar app (macOS)
+
+`uv run python scripts/menubar.py` puts a status dot in the menu bar. It shows these states:
+
+- ⚪ stopped;
+- 🟡 starting or loading the model;
+- 🟢 ready;
+- 🔴 exited.
+
+From the menu you can:
+
+- Start, Stop or Restart the server. It runs under `caffeinate -i`, and the log goes to `server/logs/server.log`.
+- See what Ollama has loaded.
+- Unload every other Ollama model. This happens before each start by default.
+- See which processes use more than 1 GB of memory.
+
+`scripts/install_menubar.sh` makes it start at login (LaunchAgent).
+
 ## Auth (ADR-0017)
 
 Every route except `/healthz` needs `Authorization: Bearer <token>`, on

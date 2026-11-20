@@ -61,3 +61,6 @@ local.properties
 
 # Editor
 .vscode/
+
+# Server logs written by scripts/menubar.py
+/server/logs/
