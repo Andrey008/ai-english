@@ -26,6 +26,9 @@ sealed class WsEvent {
      * the session down. */
     data class ServerError(val message: String) : WsEvent()
 
+    /** The server stored a [WsSessionClient.sendBookmark] (AE-5). */
+    data object BookmarkSaved : WsEvent()
+
     /** Clean server-acknowledged end (either the client sent `session_end`,
      * or the server closed the session for another reason after this). */
     data object SessionEnded : WsEvent()
@@ -42,8 +45,20 @@ sealed class WsEvent {
      * starts a fresh session, since the server's reconnect grace window
      * has almost certainly passed by then). */
     data object ReconnectFailed : WsEvent()
+
+    /** The client won't connect at all: missing or rejected token, or an
+     * unencrypted connection to a public host (ADR-0017). Retrying can't
+     * help; [message] says what to fix in Settings. */
+    data class ConnectRefused(val message: String) : WsEvent()
 }
 
-enum class SessionPhase { LISTENING, PROCESSING, SPEAKING }
+/** PREPARING: only at session start, while the server warms the LLM up
+ * (the mic stays closed until the next phase). */
+enum class SessionPhase { PREPARING, LISTENING, PROCESSING, SPEAKING }
+
+/** Details of [SessionPhase.PREPARING]: [expectedS] is the server's rough
+ * estimate for a progress bar, [modelLoading] means the model itself is
+ * being loaded into memory (the slow, ~10s case). */
+data class PrepareInfo(val expectedS: Double, val modelLoading: Boolean, val startedAtMs: Long)
 
 enum class BoundaryPhase { START, END }

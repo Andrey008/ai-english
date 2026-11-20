@@ -96,6 +96,15 @@ class SessionRegistry:
             session_id=new_id, is_reconnect=False, evicted_session_id=evicted_id, generation=generation
         )
 
+    @property
+    def held_session_id(self) -> str | None:
+        """The session holding the slot (connected, or within its grace window)."""
+        if self._slot is None:
+            return None
+        if not self._slot.connected and time.monotonic() - self._slot.last_seen > RECONNECT_GRACE_S:
+            return None
+        return self._slot.session_id
+
     def is_current(self, session_id: str, generation: int) -> bool:
         return (
             self._slot is not None

@@ -18,6 +18,11 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -49,7 +54,7 @@ import kotlinx.coroutines.launch
  * "expected unused in practice" per `presets.py`). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CharacterCreatorScreen(characterId: String?, onDone: () -> Unit) {
+fun CharacterCreatorScreen(characterId: String?, onDone: () -> Unit, onOpenGuide: () -> Unit = {}) {
     val appContainer = LocalAppContainer.current
     val scope = rememberCoroutineScope()
     val isEdit = characterId != null
@@ -64,7 +69,7 @@ fun CharacterCreatorScreen(characterId: String?, onDone: () -> Unit) {
     var accent by remember { mutableStateOf("en_US") }
     var roleDescription by remember { mutableStateOf("") }
     var ttsVoiceId by remember { mutableStateOf("") }
-    var ttsEngine by remember { mutableStateOf(TtsEngine.PIPER) }
+    var ttsEngine by remember { mutableStateOf(TtsEngine.KOKORO) }
     var temperature by remember { mutableFloatStateOf(0.7f) }
     var correctionStyle by remember { mutableStateOf(CorrectionStyle.OFF) }
     var memoryEnabled by remember { mutableStateOf(true) }
@@ -144,7 +149,20 @@ fun CharacterCreatorScreen(characterId: String?, onDone: () -> Unit) {
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text(if (isEdit) "Edit character" else "Create character") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text(if (isEdit) "Edit character" else "Create character") },
+                navigationIcon = {
+                    IconButton(onClick = onDone) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                },
+                actions = {
+                    TextButton(onClick = onOpenGuide) {
+                        Icon(Icons.AutoMirrored.Filled.HelpOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("Guide", modifier = Modifier.padding(start = 6.dp))
+                    }
+                },
+            )
+        },
     ) { padding ->
         if (loading) {
             Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
@@ -197,7 +215,7 @@ fun CharacterCreatorScreen(characterId: String?, onDone: () -> Unit) {
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
             )
-            EnumChoiceField("TTS engine", listOf(TtsEngine.PIPER to "Piper", TtsEngine.XTTS to "XTTS"), ttsEngine) { ttsEngine = it }
+            EnumChoiceField("TTS engine", listOf(TtsEngine.KOKORO to "Kokoro", TtsEngine.PIPER to "Piper", TtsEngine.XTTS to "XTTS"), ttsEngine) { ttsEngine = it }
             Text(
                 "Temperature: ${"%.2f".format(temperature)}",
                 style = MaterialTheme.typography.labelLarge,

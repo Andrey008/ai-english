@@ -1,5 +1,6 @@
 package com.aienglish.companion.data.api
 
+import com.aienglish.companion.data.ServerConfig
 import com.aienglish.companion.data.ServerConfigStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -13,22 +14,21 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
-/** Typed client for `/characters` and `/scenarios` (`server/app/main.py`).
- * Reads the server address fresh on every call (via [baseUrlProvider]) so a
+/** Typed client for `/characters`, `/scenarios`, `/conversations`, `/stats`
+ * and `/vocabulary`
+ * (`server/app/main.py`).
+ * Reads the server config fresh on every call (via [configProvider]) so a
  * user changing it in Settings (`STORY-05-10`) doesn't require restarting
- * the app. */
+ * the app. Every request carries the device token (ADR-0017). */
 class ApiClient(
-    private val baseUrlProvider: suspend () -> String,
+    private val configProvider: suspend () -> ServerConfig,
     private val httpClient: OkHttpClient = OkHttpClient(),
 ) {
     constructor(
         serverConfigStore: ServerConfigStore,
         httpClient: OkHttpClient = OkHttpClient(),
     ) : this(
-        baseUrlProvider = {
-            val config = serverConfigStore.configFlow.first()
-            "http://${config.host}:${config.port}"
-        },
+        configProvider = { serverConfigStore.configFlow.first() },
         httpClient = httpClient,
     )
 
@@ -67,19 +67,66 @@ class ApiClient(
     suspend fun deleteScenario(id: String): ApiResult<Unit> =
         toUnit(raw(request("DELETE", "/scenarios/$id")))
 
-    private suspend fun request(method: String, path: String, jsonBody: String? = null): Request {
-        val url = "${baseUrlProvider()}$path"
-        val builder = Request.Builder().url(url)
+    suspend fun listConversations(): ApiResult<List<ConversationSummary>> =
+        decoded(request("GET", "/conversations"))
+
+    suspend fun getConversation(id: String): ApiResult<ConversationDetail> =
+        decoded(request("GET", "/conversations/$id"))
+
+    suspend fun renameConversation(id: String, title: String): ApiResult<ConversationDetail> =
+        decoded(request("PATCH", "/conversations/$id", json.encodeToString(ConversationRename(title))))
+
+    suspend fun deleteConversation(id: String): ApiResult<Unit> =
+        toUnit(raw(request("DELETE", "/conversations/$id")))
+
+    /** Ask the server to load the model now (it answers at once, the load
+     * runs in the background) so a conversation started soon after
+     * doesn't wait ~10s for it. Fire and forget. */
+    suspend fun warmup(): ApiResult<Unit> = toUnit(raw(request("POST", "/warmup", "")))
+
+    /** Practice stats over the last [days] days, with day boundaries in [tz]
+     * (an IANA zone id, the phone's own by default). */
+    suspend fun stats(days: Int = 30, tz: String = java.time.ZoneId.systemDefault().id): ApiResult<PracticeStats> =
+        decoded(request("GET", "/stats?days=$days&tz=${java.net.URLEncoder.encode(tz, "UTF-8")}"))
+
+    /** Words collected from conversations (AE-5), newest first; [status]
+     * filters (`new` / `added` / `dismissed`), null returns all. */
+    suspend fun listVocabulary(status: String? = null): ApiResult<List<VocabularyWord>> =
+        decoded(request("GET", if (status != null) "/vocabulary?status=$status" else "/vocabulary"))
+
+    suspend fun setVocabularyStatus(id: String, status: String): ApiResult<VocabularyWord> =
+        decoded(request("PATCH", "/vocabulary/$id", json.encodeToString(VocabularyStatus(status))))
+
+    suspend fun setVocabularyStatuses(ids: List<String>, status: String): ApiResult<Unit> =
+        toUnit(raw(request("POST", "/vocabulary/status", json.encodeToString(VocabularyBulkStatus(ids, status)))))
+
+    suspend fun deleteVocabulary(id: String): ApiResult<Unit> =
+        toUnit(raw(request("DELETE", "/vocabulary/$id")))
+
+    /** The device this token belongs to — checks address and token together. */
+    suspend fun authMe(): ApiResult<AuthMe> = decoded(request("GET", "/auth/me"))
+
+    private suspend fun request(method: String, path: String, jsonBody: String? = null): Request? {
+        val config = configProvider()
+        if (config.connectProblem != null) return null
+        val builder = Request.Builder()
+            .url("${config.baseUrl}$path")
+            .header("Authorization", config.authorizationHeader)
         when (method) {
             "GET" -> builder.get()
             "DELETE" -> builder.delete()
             "POST" -> builder.post((jsonBody ?: "").toRequestBody(JSON_MEDIA_TYPE))
             "PUT" -> builder.put((jsonBody ?: "").toRequestBody(JSON_MEDIA_TYPE))
+            "PATCH" -> builder.patch((jsonBody ?: "").toRequestBody(JSON_MEDIA_TYPE))
         }
         return builder.build()
     }
 
-    private suspend fun raw(request: Request): ApiResult<String> = withContext(Dispatchers.IO) {
+    private suspend fun raw(request: Request?): ApiResult<String> = withContext(Dispatchers.IO) {
+        if (request == null) {
+            val problem = configProvider().connectProblem ?: "Server is not configured."
+            return@withContext ApiResult.NetworkError(IllegalStateException(problem))
+        }
         try {
             httpClient.newCall(request).execute().use { response ->
                 val body = response.body?.string()
@@ -94,7 +141,7 @@ class ApiClient(
         }
     }
 
-    private suspend inline fun <reified T> decoded(request: Request): ApiResult<T> =
+    private suspend inline fun <reified T> decoded(request: Request?): ApiResult<T> =
         when (val result = raw(request)) {
             is ApiResult.Success -> try {
                 ApiResult.Success(json.decodeFromString<T>(result.data))

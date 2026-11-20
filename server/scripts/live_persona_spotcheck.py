@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 import websockets
+from _auth import auth_headers
 
 SERVER_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = SERVER_DIR.parent
@@ -100,7 +101,7 @@ async def run(url: str, character_id: str | None, scenario_id: str | None, num_l
     t0 = time.time()
     session_id: str | None = None
 
-    async with websockets.connect(url, max_size=None) as ws:
+    async with websockets.connect(url, max_size=None, additional_headers=auth_headers()) as ws:
         start_msg = {"type": "session_start", "proto_version": 1}
         if character_id:
             start_msg["character_id"] = character_id

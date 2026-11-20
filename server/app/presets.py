@@ -34,11 +34,14 @@ class CharacterPreset(BaseModel):
     role_description: str
     system_prompt_override: str | None = None
     tts_voice_id: str
-    tts_engine: Literal["piper", "xtts"] = "piper"
+    tts_engine: Literal["piper", "kokoro", "xtts"] = "piper"
     voice_reference_path: str | None = None
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     correction_style: Literal["off", "end_of_session", "live_gentle"] = "off"
     memory_enabled: bool = True
+    # EPIC-10 / ADR-0016 §6: "interview" runs the prep-base interview
+    # (app/interview/); every other character stays "conversation".
+    session_mode: Literal["conversation", "interview"] = "conversation"
 
 
 class PresetError(RuntimeError):
@@ -105,8 +108,8 @@ class PresetStore:
                 gender="female",
                 accent="en_US",
                 role_description=DEFAULT_ROLE_DESCRIPTION,
-                tts_voice_id="en_US-lessac-medium",
-                tts_engine="piper",
+                tts_voice_id="af_jessica",
+                tts_engine="kokoro",
                 correction_style="off",
             )
         )

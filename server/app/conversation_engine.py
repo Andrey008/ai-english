@@ -12,6 +12,7 @@ import logging
 import math
 import re
 import time
+from collections.abc import Callable
 from typing import Any, AsyncIterator
 
 import ollama
@@ -21,6 +22,21 @@ from app.persona import DEFAULT_SYSTEM_PROMPT
 logger = logging.getLogger("ai_english.conversation")
 
 SENTENCE_END = re.compile(r"[.!?]+[\"')\]]?\s")
+
+
+def split_sentences(text: str) -> list[str]:
+    """Static text → sentences, the same boundaries a streamed reply gets."""
+    sentences = []
+    buf = text
+    match = SENTENCE_END.search(buf)
+    while match:
+        if sentence := buf[: match.end()].strip():
+            sentences.append(sentence)
+        buf = buf[match.end():]
+        match = SENTENCE_END.search(buf)
+    if buf.strip():
+        sentences.append(buf.strip())
+    return sentences
 
 _SYSTEM_SLOT = "{{ if .System }}{{ .System }}"
 
@@ -38,6 +54,24 @@ _SUMMARY_HEADER = (
     "CONVERSATION SO FAR (summary of the earlier part of this conversation; "
     "the most recent messages follow verbatim):"
 )
+# After a clean end (ADR-0015): one request, a strict extension of the
+# cached history like `_COMPACTION_REQUEST`. The notes are only asked for
+# when a resume would need them (the conversation doesn't fit the budget).
+_WRAP_UP_TITLE = (
+    "[Note from the app, not from the user: the conversation is over. Give "
+    "it a title of 3 to 6 words naming its main topic, like a chat title. "
+    "Output only the title.]"
+)
+_WRAP_UP_WITH_NOTES = (
+    "[Note from the app, not from the user: the conversation is over. On "
+    "the first line, give it a title of 3 to 6 words naming its main topic, "
+    "like a chat title. Then a blank line, then notes on this whole "
+    "conversation for your own reference later. Keep every concrete fact "
+    "the user shared (names, places, people, pets, likes and dislikes, "
+    "plans, opinions) and the topics you covered, in order; skip "
+    "pleasantries. Third person, plain prose, at most 150 words. Output "
+    "only the title and the notes.]"
+)
 
 
 class ConversationEngineError(RuntimeError):
@@ -51,13 +85,28 @@ class ConversationEngine:
         self._histories: dict[str, list[dict]] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._prompt_head: str | None = None
-        self._prewarm_tasks: set[asyncio.Task] = set()
+        # Session-start prewarm per session: the WS session waits on it
+        # before opening the mic (the client shows a loader meanwhile).
+        self._prewarm_tasks: dict[str, asyncio.Task] = {}
+        self._prewarm_estimates: dict[str, int] = {}
+        # Ollama unloads an idle model after 5 min by default, and loading
+        # gemma2:27b again costs most of a cold session start. Every
+        # request carries this instead.
+        self._keep_alive = str(config["llm"].get("keep_alive", "1h"))
+        self._prefill_tok_s = float(config["llm"].get("prefill_tok_s", 135))
+        self._load_s_guess = float(config["llm"].get("model_load_s", 10))
+        self._load_lock = asyncio.Lock()
         compaction = config["llm"].get("compaction", {})
         self._compact_trigger_tokens = int(compaction.get("trigger_tokens", 0))
+        # A resumed history is prefilled cold at session start (~135 tok/s
+        # here), so it gets a much smaller budget than a live, cached one.
+        self._resume_tokens = int(compaction.get("resume_tokens", self._compact_trigger_tokens))
         self._compact_keep_messages = int(compaction.get("keep_recent_messages", 6))
         self._base_prompts: dict[str, str] = {}
         self._compaction_tasks: dict[str, asyncio.Task] = {}
         self._pending_summaries: dict[str, tuple[str, int]] = {}
+        self._reply_prewarm = bool(config["llm"].get("reply_prewarm", True))
+        self._reply_prewarm_tasks: dict[str, asyncio.Task] = {}
 
     async def check_ready(self) -> None:
         """Fail fast at server startup if Ollama is unreachable or the
@@ -87,25 +136,152 @@ class ConversationEngine:
         session_id: str,
         system_prompt: str | None = None,
         opening_message: str | None = None,
+        restored: list[dict] | None = None,
     ) -> None:
         """`opening_message` seeds history with an assistant turn the
         character already spoke (a scenario's proactive opening line,
         `STORY-03-04`) before any user turn — so the next real
         `generate_reply` call has that context, instead of the LLM being
         unaware the character already said something.
+
+        `restored` is a resumed conversation (ADR-0015): `restore_history`'s
+        output, system message first. `system_prompt` is then the persona
+        base that later compaction builds on.
         """
-        history = [{"role": "system", "content": system_prompt or DEFAULT_SYSTEM_PROMPT}]
-        if opening_message:
-            history.append({"role": "assistant", "content": opening_message})
+        base = system_prompt or DEFAULT_SYSTEM_PROMPT
+        if restored:
+            history = list(restored)
+        else:
+            history = [{"role": "system", "content": base}]
+            if opening_message:
+                history.append({"role": "assistant", "content": opening_message})
         self._histories[session_id] = history
-        self._base_prompts[session_id] = history[0]["content"]
-        logger.info("conversation_session_started", extra={"session_id": session_id})
-        if self._prompt_head is not None:
-            task = asyncio.get_running_loop().create_task(
-                self._prewarm(session_id, self._prompt_head + history[0]["content"])
+        self._base_prompts[session_id] = base
+        logger.info(
+            "conversation_session_started",
+            extra={"session_id": session_id, "restored_messages": len(history) - 1 if restored else 0},
+        )
+        self._prewarm_estimates[session_id] = _estimate_tokens(history)
+        if restored:
+            # Not cancelled by the first user turn (unlike the reply
+            # prewarm): Ollama runs one request at a time, so that turn
+            # queues behind this one and then hits the cache.
+            coro = self._prewarm_history(session_id, list(history))
+        elif opening_message:
+            # System prompt + the line the character opens with (scenario
+            # opening, interview first question): cached as a whole, the
+            # way the reply prewarm caches a reply, so the first user turn
+            # is a strict extension. With only the prompt head cached the
+            # first interview reply took 5.0-5.3s (2026-11-13 live check).
+            coro = self._prewarm_history(session_id, list(history))
+        elif self._prompt_head is not None:
+            coro = self._prewarm(session_id, self._prompt_head + history[0]["content"])
+        else:
+            return
+        task = asyncio.get_running_loop().create_task(coro)
+        self._prewarm_tasks[session_id] = task
+        task.add_done_callback(
+            lambda t: self._prewarm_tasks.pop(session_id, None)
+            if self._prewarm_tasks.get(session_id) is t else None
+        )
+
+    async def model_loaded(self) -> bool:
+        """Whether Ollama has the model in memory right now."""
+        try:
+            resp = await self._client.ps()
+        except (ollama.ResponseError, ConnectionError, OSError):
+            return False
+        return any(m.model == self._model or m.name == self._model for m in resp.models)
+
+    async def warm_model(self) -> dict:
+        """Load the model into memory ahead of a session (server start,
+        the app opening). An empty prompt makes Ollama load the model and
+        return without generating anything."""
+        async with self._load_lock:
+            if await self.model_loaded():
+                return {"loaded": True, "load_s": 0.0}
+            started = time.monotonic()
+            try:
+                await self._client.generate(model=self._model, prompt="", keep_alive=self._keep_alive)
+            except (ollama.ResponseError, ConnectionError, OSError) as exc:
+                logger.warning("llm_warm_failed", extra={"error": str(exc)})
+                return {"loaded": False, "error": str(exc)}
+            load_s = round(time.monotonic() - started, 2)
+            self._load_s_guess = load_s
+            logger.info("llm_model_loaded", extra={"model": self._model, "load_s": load_s})
+            return {"loaded": True, "load_s": load_s}
+
+    def prewarm_pending(self, session_id: str) -> asyncio.Task | None:
+        task = self._prewarm_tasks.get(session_id)
+        return task if task is not None and not task.done() else None
+
+    def estimate_prepare_s(self, session_id: str, model_loaded: bool) -> float:
+        """Rough time until the session's prewarm finishes, so the client's
+        loader can fill at a believable pace. Not a promise."""
+        tokens = self._prewarm_estimates.get(session_id, 600)
+        load = 0.0 if model_loaded else self._load_s_guess
+        return round(load + tokens / self._prefill_tok_s, 1)
+
+    def restore_history(self, base_prompt: str, turns: list[dict], summary: str | None = None) -> tuple[list[dict], str]:
+        """LLM history for a resumed conversation from its stored `turns`
+        (role/text dicts, oldest first), and how it was built: "full",
+        "summary" or "truncated" (ADR-0015 §3)."""
+        system = {"role": "system", "content": base_prompt}
+        full = [system] + turns_to_messages(turns)
+        if self.fits_context(full):
+            return full, "full"
+        if summary:
+            head = {"role": "system", "content": f"{base_prompt}\n\n{_SUMMARY_HEADER}\n{summary}"}
+            cut = self._compaction_cut(full)
+            return [head] + full[cut or 1:], "summary"
+        # No notes saved: keep the most recent messages that fit, starting
+        # on a user turn, and at least the last exchange.
+        cut = 1
+        while cut < len(full) - 1 and (
+            _estimate_tokens([system] + full[cut:]) > self._resume_tokens or full[cut]["role"] != "user"
+        ):
+            cut += 1
+        while cut > 1 and full[cut]["role"] != "user":
+            cut -= 1
+        return [system] + full[cut:], "truncated"
+
+    def fits_context(self, messages: list[dict]) -> bool:
+        """Whether a resume could use these messages whole, without notes."""
+        return self._resume_tokens <= 0 or _estimate_tokens(messages) <= self._resume_tokens
+
+    def history(self, session_id: str) -> list[dict] | None:
+        history = self._histories.get(session_id)
+        return list(history) if history is not None else None
+
+    async def wrap_up(self, session_id: str, messages: list[dict], with_notes: bool) -> tuple[str | None, str | None]:
+        """Title (and notes, if asked) for a conversation that just ended
+        (ADR-0015 §2). `messages` is its live history, still cached in
+        Ollama. Returns (None, None) on failure; nothing depends on it."""
+        started = time.monotonic()
+        try:
+            resp = await self._client.chat(
+                model=self._model, keep_alive=self._keep_alive,
+                messages=messages + [
+                    {"role": "user", "content": _WRAP_UP_WITH_NOTES if with_notes else _WRAP_UP_TITLE}
+                ],
+                stream=False,
+                think=False,
+                options={"num_predict": 330 if with_notes else 20},
             )
-            self._prewarm_tasks.add(task)
-            task.add_done_callback(self._prewarm_tasks.discard)
+        except (ollama.ResponseError, ConnectionError, OSError) as exc:
+            logger.warning("conversation_wrap_up_failed", extra={"session_id": session_id, "error": str(exc)})
+            return None, None
+        title, notes = parse_wrap_up(resp["message"]["content"], with_notes)
+        logger.info(
+            "conversation_wrap_up_done",
+            extra={
+                "session_id": session_id,
+                "duration_s": round(time.monotonic() - started, 2),
+                "title": title,
+                "notes_words": len(notes.split()) if notes else 0,
+            },
+        )
+        return title, notes
 
     async def _prewarm(self, session_id: str, prompt_prefix: str) -> None:
         """Process the session's system prompt into Ollama's KV cache while
@@ -122,7 +298,7 @@ class ConversationEngine:
         started = time.monotonic()
         try:
             await self._client.generate(
-                model=self._model, prompt=prompt_prefix, raw=True, options={"num_predict": 1}
+                model=self._model, keep_alive=self._keep_alive, prompt=prompt_prefix, raw=True, options={"num_predict": 1}
             )
         except (ollama.ResponseError, ConnectionError, OSError) as exc:
             logger.warning("llm_prewarm_failed", extra={"session_id": session_id, "error": str(exc)})
@@ -132,21 +308,73 @@ class ConversationEngine:
             extra={"session_id": session_id, "duration_s": round(time.monotonic() - started, 2)},
         )
 
+    async def _prewarm_history(self, session_id: str, messages: list[dict]) -> None:
+        """A resumed conversation's whole history, cached the way the reply
+        prewarm caches it (`_start_reply_prewarm`)."""
+        started = time.monotonic()
+        try:
+            await self._client.chat(
+                model=self._model, keep_alive=self._keep_alive, messages=messages, stream=False, think=False, options={"num_predict": 1}
+            )
+        except (ollama.ResponseError, ConnectionError, OSError) as exc:
+            logger.warning("llm_prewarm_failed", extra={"session_id": session_id, "error": str(exc)})
+            return
+        logger.info(
+            "llm_prewarm_done",
+            extra={
+                "session_id": session_id,
+                "duration_s": round(time.monotonic() - started, 2),
+                "est_tokens": _estimate_tokens(messages),
+            },
+        )
+
+    def last_reply(self, session_id: str) -> str | None:
+        """The character's most recent line (STT context prompt)."""
+        for message in reversed(self._histories.get(session_id, [])):
+            if message["role"] == "assistant":
+                return message["content"]
+        return None
+
+    async def append_exchange(self, session_id: str, user_text: str, assistant_text: str) -> None:
+        """Record a user line and a reply the server spoke without the LLM
+        (interview commands: skip / repeat). Appending keeps the history a
+        strict extension of what Ollama has cached, and the reply prewarm
+        then caches it for the next turn."""
+        await self._cancel_reply_prewarm(session_id)
+        await self._defer_compaction(session_id)
+        history = self._histories.setdefault(
+            session_id, [{"role": "system", "content": DEFAULT_SYSTEM_PROMPT}]
+        )
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": assistant_text})
+        self._start_reply_prewarm(session_id, history)
+
     def end_session(self, session_id: str) -> None:
-        task = self._compaction_tasks.pop(session_id, None)
-        if task is not None:
-            task.cancel()
+        self._prewarm_estimates.pop(session_id, None)
+        for tasks in (self._compaction_tasks, self._reply_prewarm_tasks):
+            task = tasks.pop(session_id, None)
+            if task is not None:
+                task.cancel()
         self._histories.pop(session_id, None)
         self._cancel_events.pop(session_id, None)
         self._base_prompts.pop(session_id, None)
         self._pending_summaries.pop(session_id, None)
         logger.info("conversation_session_ended", extra={"session_id": session_id})
 
-    async def generate_reply(self, session_id: str, user_text: str) -> AsyncIterator[dict]:
+    async def generate_reply(
+        self, session_id: str, user_text: str, reply_suffix: Callable[[str], str | None] | None = None
+    ) -> AsyncIterator[dict]:
         """Yields {"type": "sentence", "text": ...} as sentences complete,
         then a final {"type": "done", "full_text": ...}. Raises
         ConversationEngineError on an unreachable/failing Ollama backend.
+
+        `reply_suffix` (interview mode, EPIC-10) gets the model's full reply
+        and may return text the server says right after it — e.g. the next
+        question, verbatim. It is yielded as more sentences and stored as
+        part of the same assistant message, so the history (and the reply
+        prewarm) matches exactly what was spoken.
         """
+        await self._cancel_reply_prewarm(session_id)
         await self._defer_compaction(session_id)
         history = self._histories.setdefault(
             session_id, [{"role": "system", "content": DEFAULT_SYSTEM_PROMPT}]
@@ -158,7 +386,7 @@ class ConversationEngine:
 
         try:
             stream = await self._client.chat(
-                model=self._model, messages=history, stream=True, think=False
+                model=self._model, keep_alive=self._keep_alive, messages=history, stream=True, think=False
             )
         except (ollama.ResponseError, ConnectionError, OSError) as exc:
             history.pop()  # don't leave a dangling user turn with no reply
@@ -199,9 +427,61 @@ class ConversationEngine:
 
         if buf.strip():
             yield {"type": "sentence", "text": buf.strip()}
+        suffix = reply_suffix(full_reply) if reply_suffix is not None else None
+        if suffix:
+            for sentence in split_sentences(suffix):
+                yield {"type": "sentence", "text": sentence}
+            full_reply = f"{full_reply.rstrip()} {suffix}".strip()
         history.append({"role": "assistant", "content": full_reply})
         self._maybe_start_compaction(session_id)
+        if session_id not in self._compaction_tasks:  # its summary request already extends this history
+            self._start_reply_prewarm(session_id, history)
         yield {"type": "done", "full_text": full_reply}
+
+    def _start_reply_prewarm(self, session_id: str, history: list[dict]) -> None:
+        """Ollama with gemma2 checkpoints its cache only at the end of a
+        prompt, not after the tokens it generated — so without this the
+        next turn re-reads the whole previous reply before the first
+        token (~0.25-0.5s, growing with reply length). Re-evaluating
+        history + reply with `num_predict 1` while the reply is still
+        being spoken makes the next request a cached prefix again.
+        Measured (AE-2 bench, free mode): first sentence 1.20s -> 0.81s,
+        on par with MLX, which caches generated tokens itself (ADR-0013).
+        """
+        if not self._reply_prewarm:
+            return
+        messages = list(history)  # snapshot: the next user turn appends to `history`
+        task = asyncio.get_running_loop().create_task(self._run_reply_prewarm(session_id, messages))
+        self._reply_prewarm_tasks[session_id] = task
+        task.add_done_callback(
+            lambda t: self._reply_prewarm_tasks.pop(session_id, None)
+            if self._reply_prewarm_tasks.get(session_id) is t else None
+        )
+
+    async def _run_reply_prewarm(self, session_id: str, messages: list[dict]) -> None:
+        started = time.monotonic()
+        try:
+            await self._client.chat(
+                model=self._model, keep_alive=self._keep_alive, messages=messages, stream=False, think=False, options={"num_predict": 1}
+            )
+        except (ollama.ResponseError, ConnectionError, OSError) as exc:
+            logger.warning("llm_reply_prewarm_failed", extra={"session_id": session_id, "error": str(exc)})
+            return
+        logger.info(
+            "llm_reply_prewarm_done",
+            extra={"session_id": session_id, "duration_s": round(time.monotonic() - started, 2)},
+        )
+
+    async def _cancel_reply_prewarm(self, session_id: str) -> None:
+        """Normally long finished (it takes ~0.5-1s; the reply's playback
+        takes several). If the user cuts in first, their turn wins —
+        same rule as `_defer_compaction`."""
+        task = self._reply_prewarm_tasks.pop(session_id, None)
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.wait({task})
+        logger.info("llm_reply_prewarm_cancelled", extra={"session_id": session_id})
 
     def _maybe_start_compaction(self, session_id: str) -> None:
         """In-session context compaction (STORY-05-11 follow-up). History
@@ -269,7 +549,7 @@ class ConversationEngine:
                     extra={"session_id": session_id, "est_tokens": tokens_before, "messages": len(history)},
                 )
                 resp = await self._client.chat(
-                    model=self._model,
+                    model=self._model, keep_alive=self._keep_alive,
                     messages=history + [{"role": "user", "content": _COMPACTION_REQUEST}],
                     stream=False,
                     think=False,
@@ -297,7 +577,7 @@ class ConversationEngine:
             expected_len = len(history)
             prewarm_started = time.monotonic()
             await self._client.chat(
-                model=self._model, messages=compacted, stream=False, think=False, options={"num_predict": 1}
+                model=self._model, keep_alive=self._keep_alive, messages=compacted, stream=False, think=False, options={"num_predict": 1}
             )
             if self._histories.get(session_id) is not history or len(history) != expected_len:
                 return  # session ended or moved on meanwhile; retry after the next reply
@@ -345,6 +625,36 @@ class ConversationEngine:
             return False
         event.set()
         return True
+
+
+def turns_to_messages(turns: list[dict]) -> list[dict]:
+    """Stored turns (role/text) as chat messages: consecutive messages of
+    one role merged, and a trailing user message dropped (its reply had
+    failed; the user will say it again)."""
+    messages: list[dict] = []
+    for turn in turns:
+        if messages and messages[-1]["role"] == turn["role"]:
+            messages[-1] = {"role": turn["role"], "content": f"{messages[-1]['content']}\n{turn['text']}"}
+        else:
+            messages.append({"role": turn["role"], "content": turn["text"]})
+    if messages and messages[-1]["role"] == "user":
+        messages.pop()
+    return messages
+
+
+def parse_wrap_up(text: str, with_notes: bool) -> tuple[str | None, str | None]:
+    """First line = title (markdown, quotes and a "Title:" label stripped);
+    the rest = notes, when they were asked for."""
+    lines = text.strip().splitlines()
+    if not lines:
+        return None, None
+    title = re.sub(r"^(title\s*:\s*)", "", lines[0].strip().strip("*#").strip(), flags=re.I)
+    title = title.strip().strip("\"'“”*").strip()
+    title = " ".join(title.split()[:10]) or None
+    notes = None
+    if with_notes:
+        notes = re.sub(r"^(notes\s*:\s*)", "", "\n".join(lines[1:]).strip(), flags=re.I).strip() or None
+    return title, notes
 
 
 def _estimate_tokens(messages: list[dict]) -> int:

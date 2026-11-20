@@ -12,7 +12,7 @@ class FakeOllama:
         self.block = block
         self.calls: list[str] = []
 
-    async def chat(self, model, messages, stream=False, think=None, options=None):
+    async def chat(self, model, messages, stream=False, think=None, options=None, keep_alive=None):
         if stream:
             return self._stream("Sure thing. ")
         kind = "prewarm" if (options or {}).get("num_predict") == 1 else "summary"

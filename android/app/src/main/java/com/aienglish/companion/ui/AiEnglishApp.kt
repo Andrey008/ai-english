@@ -15,11 +15,15 @@ import com.aienglish.companion.ui.theme.AiEnglishTheme
 @Composable
 fun AiEnglishApp(appContainer: AppContainer) {
     CompositionLocalProvider(LocalAppContainer provides appContainer) {
-        AiEnglishTheme {
+        val appearance by appContainer.appearanceStore.appearanceFlow.collectAsState(initial = null)
+        // First DataStore read still in flight: nothing yet, rather than a
+        // flash of the wrong theme.
+        val loadedAppearance = appearance ?: return@CompositionLocalProvider
+        AiEnglishTheme(loadedAppearance) {
             Surface(modifier = Modifier.fillMaxSize()) {
                 val config by appContainer.serverConfigStore.configFlow.collectAsState(initial = null)
                 config?.let { current ->
-                    val startDestination = if (current.isConfigured) Routes.CharacterList else Routes.ServerSetup
+                    val startDestination = if (current.isConfigured) Routes.Conversations else Routes.ServerSetup
                     AppNavHost(
                         serverConfigStore = appContainer.serverConfigStore,
                         startDestination = startDestination,

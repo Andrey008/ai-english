@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- The server has no TLS termination (ARCHITECTURE.md's "TLS at the
-         WS layer as defense in depth" is aspirational, not implemented) —
-         all traffic is plain HTTP/WS over the Tailscale-private network. -->
+    <!-- Cleartext stays allowed for LAN / Tailscale / emulator addresses,
+         which the user types in by hand (so they can't be listed here).
+         The app itself refuses to send the device token over plain HTTP
+         to a public host (ServerConfig.cleartextBlocked, ADR-0017); a
+         public server must be reached over HTTPS/WSS. User-installed CAs are not trusted (platform default). -->
     <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

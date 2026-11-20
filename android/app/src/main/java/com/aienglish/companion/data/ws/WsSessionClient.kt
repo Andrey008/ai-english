@@ -1,6 +1,7 @@
 package com.aienglish.companion.data.ws
 
 import android.util.Log
+import com.aienglish.companion.data.ServerConfig
 import com.aienglish.companion.data.ServerConfigStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +19,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
@@ -34,6 +37,7 @@ import java.util.concurrent.TimeUnit
 
 private const val TAG = "WsSessionClient"
 private const val PROTO_VERSION = 1
+private const val CLOSE_NOT_FOUND = 4404
 private val RECONNECT_BACKOFF_MS = listOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 32_000L)
 
 /** No `pingInterval` means OkHttp never proactively probes an idle
@@ -57,14 +61,11 @@ private fun defaultOkHttpClient(): OkHttpClient =
  * guessing at continuity itself, per the protocol doc's known gap around
  * a server restart losing in-memory session state). */
 class WsSessionClient(
-    private val baseUrlProvider: suspend () -> String,
+    private val configProvider: suspend () -> ServerConfig,
     private val httpClient: OkHttpClient = defaultOkHttpClient(),
 ) {
     constructor(serverConfigStore: ServerConfigStore, httpClient: OkHttpClient = defaultOkHttpClient()) : this(
-        baseUrlProvider = {
-            val config = serverConfigStore.configFlow.first()
-            "http://${config.host}:${config.port}"
-        },
+        configProvider = { serverConfigStore.configFlow.first() },
         httpClient = httpClient,
     )
 
@@ -90,6 +91,9 @@ class WsSessionClient(
     private val _sessionPhase = MutableStateFlow<SessionPhase?>(null)
     val sessionPhaseFlow: StateFlow<SessionPhase?> = _sessionPhase.asStateFlow()
 
+    private val _prepareInfo = MutableStateFlow<PrepareInfo?>(null)
+    val prepareInfoFlow: StateFlow<PrepareInfo?> = _prepareInfo.asStateFlow()
+
     @Volatile private var webSocket: WebSocket? = null
     // Only true between this socket's `session_ready` and its disconnect.
     // The mic streams continuously, and OkHttp queues anything sent before
@@ -100,16 +104,30 @@ class WsSessionClient(
     @Volatile private var sessionId: String? = null
     @Volatile private var characterId: String? = null
     @Volatile private var scenarioId: String? = null
+    @Volatile private var englishLevel: String? = null
+    @Volatile private var useMemory: Boolean = true
+    @Volatile private var resumeSessionId: String? = null
     @Volatile private var currentAudioSentenceIndex: Int? = null
     @Volatile private var explicitlyEnded = true
     @Volatile private var reconnectAttempt = 0
     private var reconnectJob: Job? = null
 
-    /** Starts a fresh session (no `session_id`) — always create mode, per
-     * the protocol; reconnect is this client's own internal concern. */
-    fun connect(characterId: String? = null, scenarioId: String? = null) {
+    /** Starts a fresh session (no `session_id`), or continues a past
+     * conversation with [resumeSessionId] (ADR-0015: the server takes the
+     * character and scenario from it, so those are ignored then).
+     * Reconnect is this client's own internal concern. */
+    fun connect(
+        characterId: String? = null,
+        scenarioId: String? = null,
+        englishLevel: String? = null,
+        useMemory: Boolean = true,
+        resumeSessionId: String? = null,
+    ) {
         this.characterId = characterId
         this.scenarioId = scenarioId
+        this.englishLevel = englishLevel
+        this.useMemory = useMemory
+        this.resumeSessionId = resumeSessionId
         this.sessionId = null
         explicitlyEnded = false
         reconnectAttempt = 0
@@ -126,6 +144,14 @@ class WsSessionClient(
     fun sendAudio(pcm: ByteArray) {
         if (!sessionReady) return
         webSocket?.send(pcm.toByteString())
+    }
+
+    /** "I didn't get a word here" (AE-5): the server marks the character
+     * line playing or just played, and picks the hard words out of it
+     * after the conversation. False if not connected right now. */
+    fun sendBookmark(): Boolean {
+        if (!sessionReady) return false
+        return webSocket?.send(buildJsonObject { put("type", "bookmark") }.toString()) == true
     }
 
     fun endSession() {
@@ -155,8 +181,17 @@ class WsSessionClient(
 
     private fun openSocket() {
         clientScope.launch {
-            val url = baseUrlProvider().replaceFirst("http", "ws") + "/ws/session"
-            val request = Request.Builder().url(url).build()
+            val config = configProvider()
+            config.connectProblem?.let { problem ->
+                giveUp(problem)
+                return@launch
+            }
+            val url = config.baseUrl.replaceFirst("http", "ws") + "/ws/session"
+            // ADR-0017: the token goes in the upgrade request's header, never the URL.
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", config.authorizationHeader)
+                .build()
             sessionReady = false
             Log.i(TAG, "opening socket to $url (attempt=$reconnectAttempt)")
             webSocket = httpClient.newWebSocket(request, Listener())
@@ -178,11 +213,17 @@ class WsSessionClient(
                 put("type", "session_start")
                 put("proto_version", PROTO_VERSION)
                 val currentSessionId = sessionId
+                val resumeId = resumeSessionId
                 if (currentSessionId != null) {
                     put("session_id", currentSessionId)
+                } else if (resumeId != null) {
+                    put("resume_session_id", resumeId)
+                    englishLevel?.let { put("english_level", it) }
                 } else {
                     characterId?.let { put("character_id", it) }
                     scenarioId?.let { put("scenario_id", it) }
+                    englishLevel?.let { put("english_level", it) }
+                    put("use_memory", useMemory)
                 }
             }
             webSocket.send(payload.toString())
@@ -199,6 +240,13 @@ class WsSessionClient(
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             Log.w(TAG, "server closing socket: code=$code reason=$reason")
+            if (code == CLOSE_NOT_FOUND && !isStale(webSocket)) {
+                // The conversation to continue is gone (deleted); retrying can't help.
+                explicitlyEnded = true
+                _sessionActive.value = false
+                _sessionPhase.value = null
+                clientScope.launch { _events.emit(WsEvent.ReconnectFailed) }
+            }
             webSocket.close(1000, null)
         }
 
@@ -211,6 +259,12 @@ class WsSessionClient(
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             Log.w(TAG, "socket failure (stale=${isStale(webSocket)}, http=${response?.code})", t)
             if (isStale(webSocket)) return
+            if (response?.code == 401 || response?.code == 403) {
+                // A bad or revoked token won't get better by retrying.
+                this@WsSessionClient.webSocket = null
+                giveUp("The server rejected this device's token. Check it in Settings.")
+                return
+            }
             handleDisconnect()
         }
     }
@@ -229,10 +283,20 @@ class WsSessionClient(
             }
             "session_state" -> {
                 val phase = when (obj["state"]?.jsonPrimitive?.content) {
+                    "preparing" -> SessionPhase.PREPARING
                     "listening" -> SessionPhase.LISTENING
                     "processing" -> SessionPhase.PROCESSING
                     "speaking" -> SessionPhase.SPEAKING
                     else -> return
+                }
+                _prepareInfo.value = if (phase == SessionPhase.PREPARING) {
+                    PrepareInfo(
+                        expectedS = obj["expected_s"]?.jsonPrimitive?.doubleOrNull ?: 10.0,
+                        modelLoading = obj["model_loading"]?.jsonPrimitive?.booleanOrNull ?: false,
+                        startedAtMs = System.currentTimeMillis(),
+                    )
+                } else {
+                    null
                 }
                 _sessionPhase.value = phase
                 WsEvent.SessionState(phase)
@@ -250,9 +314,21 @@ class WsSessionClient(
             }
             "error" -> WsEvent.ServerError(obj["message"]?.jsonPrimitive?.content ?: "unknown error")
             "session_ended" -> WsEvent.SessionEnded
+            "bookmark_saved" -> WsEvent.BookmarkSaved
             else -> return
         }
         clientScope.launch { _events.emit(event) }
+    }
+
+    /** Stop for good with [WsEvent.ConnectRefused]. */
+    private fun giveUp(message: String) {
+        Log.w(TAG, "giving up: $message")
+        explicitlyEnded = true
+        sessionReady = false
+        reconnectJob?.cancel()
+        _sessionActive.value = false
+        _sessionPhase.value = null
+        clientScope.launch { _events.emit(WsEvent.ConnectRefused(message)) }
     }
 
     private fun handleDisconnect() {

@@ -19,6 +19,7 @@ import wave
 from pathlib import Path
 
 import websockets
+from _auth import auth_headers
 
 DEFAULT_WAV = Path(__file__).resolve().parent.parent.parent / "poc" / "samples" / "test_input.wav"
 OUT_DIR = Path(__file__).resolve().parent / "ws_test_output"
@@ -46,7 +47,7 @@ async def run(wav_path: Path, url: str) -> None:
     audio_chunks: dict[int, bytearray] = {}
     current_sentence: int | None = None
 
-    async with websockets.connect(url, max_size=None) as ws:
+    async with websockets.connect(url, max_size=None, additional_headers=auth_headers()) as ws:
         await ws.send(json.dumps({"type": "session_start", "proto_version": 1}))
 
         async def sender():

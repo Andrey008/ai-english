@@ -37,6 +37,7 @@ import wave
 from pathlib import Path
 
 import websockets
+from _auth import auth_headers
 
 CLIPS_DIR = Path(__file__).resolve().parent.parent.parent / "poc" / "samples" / "real_voice"
 CLIPS = [
@@ -63,7 +64,7 @@ async def main(url: str) -> None:
     results: list[dict] = []
     turn_log: list[dict] = []
 
-    async with websockets.connect(url, max_size=None) as ws:
+    async with websockets.connect(url, max_size=None, additional_headers=auth_headers()) as ws:
         await ws.send(json.dumps({"type": "session_start", "proto_version": 1}))
         print("session:", await ws.recv())
         await ws.recv()  # initial session_state: listening

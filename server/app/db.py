@@ -60,7 +60,14 @@ class Database:
             await self._conn.commit()
             logger.info("migration_applied", extra={"migration_file": path.name})
 
-    async def create_session(self, session_id: str, character_id: str | None = None, scenario_id: str | None = None) -> None:
+    async def create_session(
+        self,
+        session_id: str,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+        english_level: str | None = None,
+        use_memory: bool = True,
+    ) -> None:
         """Upsert, not a plain insert: `SessionRegistry.try_claim` reuses
         the client-requested `session_id` even for a brand-new session
         (e.g. reconnecting after a server restart, once the in-memory
@@ -71,20 +78,30 @@ class Database:
         client reconnect verification. Upserting starts the row fresh
         (clears `ended_at`, updates the rest) exactly like a real new
         session should look, whether or not that id happens to be reused.
+        (Since ADR-0015 such a reconnect resumes the existing row instead,
+        so the conflict branch is a fallback only.)
         """
         assert self._conn is not None
         await self._conn.execute(
             """
-            INSERT INTO sessions (id, character_id, started_at, ended_at, scenario_id)
-            VALUES (?, ?, ?, NULL, ?)
+            INSERT INTO sessions (id, character_id, started_at, ended_at, scenario_id, english_level, use_memory)
+            VALUES (?, ?, ?, NULL, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 character_id = excluded.character_id,
                 started_at = excluded.started_at,
                 ended_at = NULL,
-                scenario_id = excluded.scenario_id
+                scenario_id = excluded.scenario_id,
+                english_level = excluded.english_level,
+                use_memory = excluded.use_memory
             """,
-            (session_id, character_id, _now(), scenario_id),
+            (session_id, character_id, _now(), scenario_id, english_level, int(use_memory)),
         )
+        await self._conn.commit()
+
+    async def reopen_session(self, session_id: str) -> None:
+        """A resumed conversation (ADR-0015) is live again until its next end."""
+        assert self._conn is not None
+        await self._conn.execute("UPDATE sessions SET ended_at = NULL WHERE id = ?", (session_id,))
         await self._conn.commit()
 
     async def end_session(self, session_id: str) -> None:
@@ -94,21 +111,93 @@ class Database:
         )
         await self._conn.commit()
 
-    async def add_turn(self, session_id: str, role: str, text: str, audio_ref: str | None = None) -> None:
+    async def add_turn(
+        self, session_id: str, role: str, text: str, audio_ref: str | None = None, question_idx: int | None = None,
+        audio_ms: int | None = None,
+    ) -> None:
+        """`question_idx`: the interview question this turn belongs to (EPIC-10).
+        `audio_ms`: how long the turn's audio was (practice stats)."""
         assert self._conn is not None
         await self._conn.execute(
-            "INSERT INTO turns (id, session_id, role, text, audio_ref, ts) VALUES (?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), session_id, role, text, audio_ref, _now()),
+            "INSERT INTO turns (id, session_id, role, text, audio_ref, ts, question_idx, audio_ms)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), session_id, role, text, audio_ref, _now(), question_idx, audio_ms),
         )
         await self._conn.commit()
 
-    async def get_transcript(self, session_id: str) -> list[dict]:
+    async def get_transcript(self, session_id: str, since: str | None = None) -> list[dict]:
+        """`since` (an ISO timestamp) limits it to turns after that moment."""
         assert self._conn is not None
         cursor = await self._conn.execute(
-            "SELECT role, text, ts FROM turns WHERE session_id = ? ORDER BY ts ASC", (session_id,)
+            "SELECT role, text, ts, question_idx FROM turns WHERE session_id = ? AND ts > ? ORDER BY ts ASC",
+            (session_id, since or ""),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def stats_turns(self) -> list[dict]:
+        """Every turn of every session that has a user turn, with its
+        session's character/scenario, ordered by session then time — the
+        input of `app.stats.compute_stats`."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            """
+            SELECT t.session_id, t.role, t.text, t.ts, t.audio_ms, s.character_id, s.scenario_id
+            FROM turns t JOIN sessions s ON s.id = t.session_id
+            WHERE EXISTS (SELECT 1 FROM turns u WHERE u.session_id = t.session_id AND u.role = 'user')
+            ORDER BY t.session_id, t.ts
+            """
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def list_conversations(self) -> list[dict]:
+        """Sessions with at least one user turn, most recently active first.
+        `topic` is the first user line, for rows without a wrap-up title."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            """
+            SELECT s.id, s.character_id, s.scenario_id, s.english_level, s.started_at, s.ended_at, s.title,
+                   COUNT(t.id) AS turns,
+                   SUM(t.role = 'user') AS user_turns,
+                   MAX(t.ts) AS last_turn_at,
+                   (SELECT u.text FROM turns u WHERE u.session_id = s.id AND u.role = 'user'
+                    ORDER BY u.ts LIMIT 1) AS topic
+            FROM sessions s JOIN turns t ON t.session_id = s.id
+            GROUP BY s.id
+            HAVING user_turns > 0
+            ORDER BY last_turn_at DESC
+            """
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def save_wrap_up(self, session_id: str, title: str | None, summary: str | None, summary_turns: int) -> None:
+        """A new title replaces the old one unless the user set it by hand;
+        a summary is only written when there is one."""
+        assert self._conn is not None
+        new_title = "CASE WHEN title_edited THEN title ELSE COALESCE(?, title) END"
+        if summary:
+            await self._conn.execute(
+                f"UPDATE sessions SET title = {new_title}, summary = ?, summary_turns = ? WHERE id = ?",
+                (title, summary, summary_turns, session_id),
+            )
+        else:
+            await self._conn.execute(f"UPDATE sessions SET title = {new_title} WHERE id = ?", (title, session_id))
+        await self._conn.commit()
+
+    async def rename_session(self, session_id: str, title: str) -> bool:
+        assert self._conn is not None
+        cursor = await self._conn.execute("UPDATE sessions SET title = ?, title_edited = 1 WHERE id = ?", (title, session_id))
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_session(self, session_id: str) -> bool:
+        assert self._conn is not None
+        await self._conn.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
+        await self._conn.execute("DELETE FROM interview_items WHERE session_id = ?", (session_id,))
+        await self._conn.execute("DELETE FROM bookmarks WHERE session_id = ?", (session_id,))
+        cursor = await self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        await self._conn.commit()
+        return cursor.rowcount > 0
 
     async def get_session(self, session_id: str) -> dict | None:
         assert self._conn is not None
@@ -140,3 +229,213 @@ class Database:
         assert self._conn is not None
         await self._conn.execute("DELETE FROM character_memory WHERE character_id = ?", (character_id,))
         await self._conn.commit()
+
+    async def get_interview_translations(self) -> dict[str, dict]:
+        """question_id → {source_sha256, question_en}."""
+        assert self._conn is not None
+        cursor = await self._conn.execute("SELECT question_id, source_sha256, question_en FROM interview_translations")
+        return {row["question_id"]: dict(row) for row in await cursor.fetchall()}
+
+    async def save_interview_translations(self, rows: list[tuple[str, str, str]], model: str) -> None:
+        """rows: (question_id, source_sha256, question_en); upsert."""
+        assert self._conn is not None
+        now = _now()
+        await self._conn.executemany(
+            """
+            INSERT INTO interview_translations (question_id, source_sha256, question_en, model, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(question_id) DO UPDATE SET source_sha256 = excluded.source_sha256,
+                question_en = excluded.question_en, model = excluded.model, created_at = excluded.created_at
+            """,
+            [(qid, sha, text, model, now) for qid, sha, text in rows],
+        )
+        await self._conn.commit()
+
+    async def create_interview_items(self, session_id: str, items: list[dict]) -> None:
+        """items: dicts with idx, question_id, category, question_ru, question_en, status."""
+        assert self._conn is not None
+        await self._conn.execute("DELETE FROM interview_items WHERE session_id = ?", (session_id,))
+        await self._conn.executemany(
+            """
+            INSERT INTO interview_items (session_id, idx, question_id, category, question_ru, question_en, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [(session_id, i["idx"], i["question_id"], i.get("category"), i["question_ru"], i["question_en"],
+              i.get("status", "pending")) for i in items],
+        )
+        await self._conn.commit()
+
+    async def get_interview_items(self, session_id: str) -> list[dict]:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT * FROM interview_items WHERE session_id = ? ORDER BY idx", (session_id,)
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def set_interview_item_status(self, session_id: str, idx: int, status: str) -> None:
+        assert self._conn is not None
+        await self._conn.execute(
+            "UPDATE interview_items SET status = ? WHERE session_id = ? AND idx = ?", (status, session_id, idx)
+        )
+        await self._conn.commit()
+
+    async def recent_interview_question_ids(self, sessions: int) -> set[str]:
+        """Question ids asked in the `sessions` most recent interviews."""
+        assert self._conn is not None
+        if sessions <= 0:
+            return set()
+        cursor = await self._conn.execute(
+            """
+            SELECT i.question_id FROM interview_items i
+            WHERE i.status != 'pending' AND i.session_id IN (
+                SELECT s.id FROM sessions s
+                WHERE EXISTS (SELECT 1 FROM interview_items x WHERE x.session_id = s.id)
+                ORDER BY s.started_at DESC LIMIT ?
+            )
+            """,
+            (sessions,),
+        )
+        return {row["question_id"] for row in await cursor.fetchall()}
+
+    # --- vocabulary (AE-5) --------------------------------------------------
+
+    async def add_bookmark(self, session_id: str) -> str:
+        assert self._conn is not None
+        ts = _now()
+        await self._conn.execute(
+            "INSERT INTO bookmarks (id, session_id, ts) VALUES (?, ?, ?)", (str(uuid.uuid4()), session_id, ts)
+        )
+        await self._conn.commit()
+        return ts
+
+    async def vocab_scan_input(self, session_id: str) -> tuple[str | None, dict | None, list[dict], list[str]]:
+        """(watermark, the last assistant turn at or before it, the turns
+        after it, bookmark timestamps after it) — what the vocabulary pass
+        reads for one visit."""
+        assert self._conn is not None
+        cursor = await self._conn.execute("SELECT vocab_scanned_until FROM sessions WHERE id = ?", (session_id,))
+        row = await cursor.fetchone()
+        watermark = row["vocab_scanned_until"] if row else None
+        before = None
+        if watermark:
+            cursor = await self._conn.execute(
+                "SELECT role, text, ts FROM turns WHERE session_id = ? AND role = 'assistant' AND ts <= ?"
+                " ORDER BY ts DESC LIMIT 1",
+                (session_id, watermark),
+            )
+            found = await cursor.fetchone()
+            before = dict(found) if found else None
+        turns = await self.get_transcript(session_id, since=watermark)
+        cursor = await self._conn.execute(
+            "SELECT ts FROM bookmarks WHERE session_id = ? AND ts > ? ORDER BY ts", (session_id, watermark or "")
+        )
+        bookmarks = [r["ts"] for r in await cursor.fetchall()]
+        return watermark, before, turns, bookmarks
+
+    async def set_vocab_watermark(self, session_id: str, ts: str) -> None:
+        assert self._conn is not None
+        await self._conn.execute("UPDATE sessions SET vocab_scanned_until = ? WHERE id = ?", (ts, session_id))
+        await self._conn.commit()
+
+    async def upsert_vocabulary(self, session_id: str, items: list[dict]) -> None:
+        """items: word, word_key, context, explanation, translation_ru,
+        source. A word already in the list is counted again and gets the
+        newer context; its status (added/dismissed) is kept."""
+        assert self._conn is not None
+        now = _now()
+        await self._conn.executemany(
+            """
+            INSERT INTO vocabulary (id, word, word_key, context, explanation, translation_ru, source,
+                                    session_id, created_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(word_key) DO UPDATE SET
+                context = COALESCE(excluded.context, context),
+                explanation = COALESCE(excluded.explanation, explanation),
+                translation_ru = COALESCE(excluded.translation_ru, translation_ru),
+                session_id = excluded.session_id,
+                times_seen = times_seen + 1,
+                last_seen_at = excluded.last_seen_at
+            """,
+            [(str(uuid.uuid4()), i["word"], i["word_key"], i.get("context"), i.get("explanation"),
+              i.get("translation_ru"), i["source"], session_id, now, now) for i in items],
+        )
+        await self._conn.commit()
+
+    async def list_vocabulary(self, status: str | None = None) -> list[dict]:
+        assert self._conn is not None
+        where, args = ("WHERE v.status = ?", (status,)) if status else ("", ())
+        cursor = await self._conn.execute(
+            f"""
+            SELECT v.*, s.title AS session_title, s.character_id
+            FROM vocabulary v LEFT JOIN sessions s ON s.id = v.session_id
+            {where} ORDER BY v.last_seen_at DESC
+            """,
+            args,
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_vocabulary(self, word_id: str) -> dict | None:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT v.*, s.title AS session_title, s.character_id FROM vocabulary v"
+            " LEFT JOIN sessions s ON s.id = v.session_id WHERE v.id = ?",
+            (word_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def set_vocabulary_status(self, word_ids: list[str], status: str) -> int:
+        assert self._conn is not None
+        cursor = await self._conn.executemany(
+            "UPDATE vocabulary SET status = ? WHERE id = ?", [(status, wid) for wid in word_ids]
+        )
+        await self._conn.commit()
+        return cursor.rowcount
+
+    async def delete_vocabulary(self, word_id: str) -> bool:
+        assert self._conn is not None
+        cursor = await self._conn.execute("DELETE FROM vocabulary WHERE id = ?", (word_id,))
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- devices (ADR-0017) -------------------------------------------------
+
+    async def create_device(self, name: str, token_hash: str) -> dict:
+        assert self._conn is not None
+        device_id = uuid.uuid4().hex[:12]
+        await self._conn.execute(
+            "INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)",
+            (device_id, name, token_hash, _now()),
+        )
+        await self._conn.commit()
+        return await self.get_device(device_id)
+
+    async def get_device(self, device_id: str) -> dict | None:
+        assert self._conn is not None
+        cursor = await self._conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_device_by_token_hash(self, token_hash: str) -> dict | None:
+        assert self._conn is not None
+        cursor = await self._conn.execute("SELECT * FROM devices WHERE token_hash = ?", (token_hash,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def list_devices(self) -> list[dict]:
+        assert self._conn is not None
+        cursor = await self._conn.execute("SELECT * FROM devices ORDER BY created_at")
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def touch_device(self, device_id: str) -> None:
+        assert self._conn is not None
+        await self._conn.execute("UPDATE devices SET last_used_at = ? WHERE id = ?", (_now(), device_id))
+        await self._conn.commit()
+
+    async def revoke_device(self, device_id: str) -> bool:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", (_now(), device_id)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0

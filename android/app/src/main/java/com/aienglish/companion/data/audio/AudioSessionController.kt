@@ -24,6 +24,7 @@ class AudioSessionController(
     private val wsSessionClient: WsSessionClient,
     private val audioCapture: AudioCapture,
     private val audioPlayback: AudioPlayback,
+    private val headsetMicRouter: HeadsetMicRouter,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var eventsJob: Job? = null
@@ -47,9 +48,13 @@ class AudioSessionController(
     /** Returns `false` if mic capture couldn't start (missing permission
      * or unsupported device format) — playback still starts regardless,
      * since the character can still speak without a working mic even if
-     * the user can't reply. */
-    fun start(): Boolean {
+     * the user can't reply. With [useHeadsetMic], a connected Bluetooth
+     * headset is switched to its call profile first, so its mic records
+     * and playback goes the same way; without a headset this falls back
+     * to the phone mic. */
+    fun start(useHeadsetMic: Boolean = false): Boolean {
         _muted.value = false
+        val headsetMic = useHeadsetMic && headsetMicRouter.enable() != null
         audioPlayback.start()
         eventsJob = scope.launch {
             wsSessionClient.events.collect { event ->
@@ -72,7 +77,7 @@ class AudioSessionController(
                 }
             }
         }
-        return audioCapture.start { pcm ->
+        return audioCapture.start(headsetMic) { pcm ->
             // The server only turn-segments audio while it's actually
             // listening (`TurnSegmenter` in `ws_session.py`) — no
             // protocol harm in sending outside that window, but no point
@@ -98,5 +103,6 @@ class AudioSessionController(
         eventsJob = null
         audioCapture.stop()
         audioPlayback.stop()
+        headsetMicRouter.disable()
     }
 }

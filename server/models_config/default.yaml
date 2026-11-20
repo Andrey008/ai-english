@@ -7,16 +7,31 @@
 
 stt:
   engine: whisper_cpp        # whisper.cpp + Core ML
-  model: medium.en
+  model: large-v3-turbo
   mode: streaming            # 540ms median (poc/results/stt_engine_spike.md)
   # Persistent whisper-server (ADR-0007): binary/model paths are relative
   # to the repo root. Reuses the PoC's whisper.cpp build rather than
   # re-vendoring a multi-GB C++ project under /server — see ADR-0007.
   whisper_server_bin: poc/whisper.cpp/build/bin/whisper-server
-  model_path: poc/whisper.cpp/models/ggml-medium.en.bin
+  model_path: poc/whisper.cpp/models/ggml-large-v3-turbo.bin
+  language: en
   host: 127.0.0.1
   port: 8781
   startup_timeout_s: 60
+  # Measured with bench.stt_eval on 20 recorded lines (2026-11-11):
+  #   medium.en 5.7% WER, 0.74s; + context prompt 4.5%, 0.75s;
+  #   large-v3-turbo 3.3%, 1.14s; + context prompt 3.0%, 1.25s.
+  # large-v3-turbo needs its Core ML encoder
+  # (models/generate-coreml-model.sh large-v3-turbo); medium.en stays as
+  # the fallback.
+  # Pass the character's last reply to whisper as its initial prompt.
+  # Off: on a 23s phone clip it sent large-v3-turbo into a repetition
+  # loop with Chinese text despite -l en, and it made medium.en "fix" the
+  # user's grammar, hiding mistakes a teacher should see (2026-11-11).
+  context_prompt: false
+  # Keep every user utterance in server/data/debug_audio (gitignored:
+  # it's the user's voice). Turn on only for STT evaluation sessions.
+  save_utterances: false
 
 llm:
   provider: ollama
@@ -24,6 +39,18 @@ llm:
   # pulled; qwen3.8:27b measured too slow for live voice at 3.9 tok/s).
   model: gemma2:27b
   learning_layer_model: gemma2:27b   # reserved, non-critical-path use only
+  # Re-cache history + the reply just generated while it's being spoken,
+  # so the next turn doesn't re-read the reply (ADR-0013: ~-0.4s TTFA).
+  reply_prewarm: true
+  # How long Ollama keeps the model in memory after the last request
+  # (Ollama's own default is 5m, which made the first session after a
+  # short break reload 16 GB: cold session start 6-16s vs 0.4s warm).
+  # It holds ~16 GB of the Mac's 48 GB while loaded.
+  keep_alive: 1h
+  # Only for the client's "getting ready" progress estimate: prompt
+  # prefill speed and the last-known model load time (updated live).
+  prefill_tok_s: 135
+  model_load_s: 10   # measured 2026-11-16: cold load 10.4s
   # In-session context compaction (app/conversation_engine.py): once the
   # history estimate passes trigger_tokens, older turns are summarized in
   # the background and the last keep_recent_messages stay verbatim.
@@ -32,6 +59,11 @@ llm:
   compaction:
     trigger_tokens: 5000
     keep_recent_messages: 6
+    # Continuing a past conversation (ADR-0015): above this, it resumes as
+    # persona + saved notes + recent messages instead of the whole history.
+    # The history is prefilled cold at session start (~135 tok/s: 1.7K
+    # tokens took 12.8s), so this is far below trigger_tokens.
+    resume_tokens: 1500
 
 tts:
   engine: piper               # default — ~0.6s/chunk
@@ -40,6 +72,14 @@ tts:
   # Reuses the PoC's already-downloaded Piper voice models (.onnx +
   # .onnx.json), same rationale as stt.whisper_server_bin — see ADR-0007.
   voices_dir: poc/voices
+  # Second engine (ADR-0018), picked per character with `tts_engine: kokoro`.
+  # Model files: github.com/thewh1teagle/kokoro-onnx releases, tag
+  # model-files-v1.0 (gitignored /models/). Missing files → characters
+  # fall back to `voice` above.
+  kokoro:
+    model_path: models/kokoro/kokoro-v1.0.onnx
+    voices_path: models/kokoro/voices-v1.0.bin
+    speed: 1.0
 
 vad:
   engine: silero
@@ -50,6 +90,24 @@ vad:
   # off mid-thought (STORY-05-11 real-device test).
   silence_cutoff_ms: 1000
   incomplete_hold_ms: 2000
+  # Extra wait, on top of silence_cutoff_ms, before a finished-looking
+  # utterance ends the turn. It is chosen by the session's English level:
+  # lower levels pause longer to find a word. The STT call overlaps it,
+  # and speech resuming cancels it. Costs latency one for one.
+  patience_ms_by_level:
+    A2: 900
+    B1: 700
+    B2: 400
+    C1: 150
+    native: 0
+
+# ADR-0017. Every route except /healthz needs `Authorization: Bearer
+# <token>`; tokens are per device, made with `scripts/devices.py create`.
+# Turning auth off is for a throwaway local run only.
+security:
+  auth_required: true
+  # FastAPI's /docs and /openapi.json.
+  api_docs: false
 
 persistence:
   # Relative to repo root, same convention as stt/tts paths above.
@@ -65,3 +123,38 @@ latency_budget:
   # ADR-0006 — working target, quiet/normal conditions. Not a hard
   # runtime enforcement, just the number STORY-02-09 validates against.
   ttfa_target_s: 3.0
+
+# Interview mode (EPIC-10, ADR-0016). Questions come from the prep base
+# (~/www/self/cv/prep, Docker on :80) via GET /export.json.
+interview:
+  question_count: 10
+  max_followups: 1
+  # Skip questions asked in this many most recent interviews (relaxed if
+  # too few remain).
+  exclude_recent_sessions: 3
+  prep:
+    base_url: http://127.0.0.1
+    timeout_s: 3
+  # Selection weight = prio weight × status weight (STORY-10-01).
+  weights:
+    prio: {1: 3, 2: 2, 3: 1}
+    status: {learn: 2, none: 1, know: 0.5}
+
+# Vocabulary capture (AE-5): after a conversation, words the user asked
+# about or bookmarked go to GET /vocabulary. Off the live path; one local
+# LLM call per visit, and only if the user asked about a word or pressed
+# the bookmark button.
+vocabulary:
+  enabled: true
+  # How many words to pick from one bookmarked line.
+  max_words_per_bookmark: 2
+
+# claude_gateway (~/www/self/claude_gateway): Claude Code on the user's
+# subscription as HTTP. Used only off the live path — question translation
+# and the interview review (ADR-0016 §1). The client key is NOT set here:
+# put AI_ENGLISH__CLAUDE_GATEWAY__API_KEY=... in server/.env (gitignored).
+claude_gateway:
+  base_url: http://127.0.0.1:8091
+  translate_model: haiku
+  review_model: sonnet
+  timeout_s: 600

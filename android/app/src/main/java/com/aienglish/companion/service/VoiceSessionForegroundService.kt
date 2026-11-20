@@ -179,6 +179,7 @@ class VoiceSessionForegroundService : Service() {
     }
 
     private fun phaseLabel(phase: SessionPhase?): String = when (phase) {
+        SessionPhase.PREPARING -> "Getting ready…"
         SessionPhase.LISTENING -> "Listening…"
         SessionPhase.PROCESSING -> "Thinking…"
         SessionPhase.SPEAKING -> "Speaking…"
