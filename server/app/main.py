@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from pydantic import BaseModel, Field
 
 from app.auth import AuthMiddleware, config_flag
@@ -19,6 +21,7 @@ from app.logging_setup import configure_logging
 from app.presets import CharacterPreset, PresetExistsError, PresetNotFoundError, PresetStore
 from app.scenarios import ScenarioDefinition, ScenarioExistsError, ScenarioNotFoundError, ScenarioStore
 from app.session_registry import SessionRegistry
+from app.stats import DEFAULT_IDLE_CAP_S, compute_stats
 from app.stt_service import STTService
 from app.tts_service import TTSService
 from app.ws_session import handle_ws_session
@@ -233,6 +236,31 @@ def create_app() -> FastAPI:
     async def delete_scenario(scenario_id: str) -> None:
         if not app.state.scenario_store.delete(scenario_id):
             raise HTTPException(status_code=404, detail=f"scenario {scenario_id!r} not found")
+
+    @app.get("/stats")
+    async def get_stats(days: int = Query(30, ge=1, le=366), tz: str | None = None) -> dict:
+        """Practice stats (`app/stats.py`). `tz`: IANA zone for day
+        boundaries; defaults to the server's local zone."""
+        try:
+            zone = ZoneInfo(tz) if tz else datetime.now().astimezone().tzinfo
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"unknown timezone {tz!r}") from exc
+        store = app.state.preset_store
+
+        def name(character_id):
+            preset = store.get(character_id) if character_id else None
+            return preset.name if preset else None
+
+        def is_interview(character_id):
+            preset = store.get(character_id) if character_id else None
+            return preset is not None and preset.session_mode == "interview"
+
+        return compute_stats(
+            await app.state.db.stats_turns(),
+            now=datetime.now(timezone.utc), tz=zone, days=days,
+            idle_cap_s=float((app.state.config.get("stats") or {}).get("idle_cap_s", DEFAULT_IDLE_CAP_S)),
+            character_name=name, is_interview=is_interview,
+        )
 
     return app
 

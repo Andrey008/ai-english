@@ -14,7 +14,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
-/** Typed client for `/characters`, `/scenarios` and `/conversations`
+/** Typed client for `/characters`, `/scenarios`, `/conversations` and `/stats`
  * (`server/app/main.py`).
  * Reads the server config fresh on every call (via [configProvider]) so a
  * user changing it in Settings (`STORY-05-10`) doesn't require restarting
@@ -82,6 +82,11 @@ class ApiClient(
      * runs in the background) so a conversation started soon after
      * doesn't wait ~10s for it. Fire and forget. */
     suspend fun warmup(): ApiResult<Unit> = toUnit(raw(request("POST", "/warmup", "")))
+
+    /** Practice stats over the last [days] days, with day boundaries in [tz]
+     * (an IANA zone id, the phone's own by default). */
+    suspend fun stats(days: Int = 30, tz: String = java.time.ZoneId.systemDefault().id): ApiResult<PracticeStats> =
+        decoded(request("GET", "/stats?days=$days&tz=${java.net.URLEncoder.encode(tz, "UTF-8")}"))
 
     /** The device this token belongs to — checks address and token together. */
     suspend fun authMe(): ApiResult<AuthMe> = decoded(request("GET", "/auth/me"))

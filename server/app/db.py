@@ -112,13 +112,16 @@ class Database:
         await self._conn.commit()
 
     async def add_turn(
-        self, session_id: str, role: str, text: str, audio_ref: str | None = None, question_idx: int | None = None
+        self, session_id: str, role: str, text: str, audio_ref: str | None = None, question_idx: int | None = None,
+        audio_ms: int | None = None,
     ) -> None:
-        """`question_idx`: the interview question this turn belongs to (EPIC-10)."""
+        """`question_idx`: the interview question this turn belongs to (EPIC-10).
+        `audio_ms`: how long the turn's audio was (practice stats)."""
         assert self._conn is not None
         await self._conn.execute(
-            "INSERT INTO turns (id, session_id, role, text, audio_ref, ts, question_idx) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), session_id, role, text, audio_ref, _now(), question_idx),
+            "INSERT INTO turns (id, session_id, role, text, audio_ref, ts, question_idx, audio_ms)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), session_id, role, text, audio_ref, _now(), question_idx, audio_ms),
         )
         await self._conn.commit()
 
@@ -131,6 +134,21 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def stats_turns(self) -> list[dict]:
+        """Every turn of every session that has a user turn, with its
+        session's character/scenario, ordered by session then time — the
+        input of `app.stats.compute_stats`."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            """
+            SELECT t.session_id, t.role, t.text, t.ts, t.audio_ms, s.character_id, s.scenario_id
+            FROM turns t JOIN sessions s ON s.id = t.session_id
+            WHERE EXISTS (SELECT 1 FROM turns u WHERE u.session_id = t.session_id AND u.role = 'user')
+            ORDER BY t.session_id, t.ts
+            """
+        )
+        return [dict(row) for row in await cursor.fetchall()]
 
     async def list_conversations(self) -> list[dict]:
         """Sessions with at least one user turn, most recently active first.

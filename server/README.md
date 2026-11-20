@@ -72,6 +72,24 @@ model and engine selection). Override:
   `AI_ENGLISH__LLM__MODEL=qwen2.5:32b uv run uvicorn app.main:app`
 - The whole file: `AI_ENGLISH_CONFIG_FILE=/path/to/other.yaml`
 
+## Practice stats
+
+`GET /stats?days=30&tz=Europe/Kyiv` (both optional; `tz` defaults to the
+server's local zone) returns how much you practiced: totals, today,
+last 7 / 30 days, the day streak, a per-day series, and breakdowns by
+character and by kind (free / scenario / interview). Computed in
+`app/stats.py` from the `turns` table:
+
+- `speaking_s` / `listening_s` — your utterance audio and the character's
+  TTS audio (`turns.audio_ms`). Turns from before that column existed
+  are estimated from the word count; `estimated_audio_s` says how much.
+- `practice_s` — active conversation time: the time between turns, with
+  silence beyond the speech capped at `stats.idle_cap_s` (default 90s)
+  per gap, so an idle app or a conversation resumed days later doesn't
+  inflate it.
+- `words_per_minute` — only from measured audio, once there is ≥ 1 min
+  of it. VAD padding and pauses are included, so it reads a bit low.
+
 ## Tests
 
 ```

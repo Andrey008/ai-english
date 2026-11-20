@@ -476,9 +476,10 @@ async def handle_ws_session(websocket: WebSocket) -> None:
         await _wait_until_prepared(websocket, conversation_engine, session_id)
         if opening_text and not claim.is_reconnect:
             await websocket.send_json({"type": "session_state", "state": "speaking"})
-            await _speak_text(websocket, tts_service, session_id, opening_text, voice_id, clock)
+            sent = await _speak_text(websocket, tts_service, session_id, opening_text, voice_id, clock)
             await db.add_turn(session_id, "assistant", opening_text,
-                              question_idx=interview.index if interview is not None else None)
+                              question_idx=interview.index if interview is not None else None,
+                              audio_ms=_audio_ms(sent))
             await clock.wait_drained()
             segmenter.reset()
         if interview is not None and interview.finished:
@@ -651,8 +652,9 @@ async def _close_quietly(websocket) -> None:
 
 async def _speak_sentence(
     websocket, tts_service, session_id, text, sentence_index, voice_id, clock: PlaybackClock | None = None
-) -> float | None:
-    """Returns the monotonic time the first audio chunk was sent (None if none was)."""
+) -> tuple[float | None, int]:
+    """Returns the monotonic time the first audio chunk was sent (None if
+    none was) and how many PCM bytes were sent."""
     await websocket.send_json(
         {"type": "response_text_chunk", "text": text, "sentence_index": sentence_index}
     )
@@ -660,9 +662,11 @@ async def _speak_sentence(
         {"type": "audio_chunk_boundary", "phase": "start", "sentence_index": sentence_index}
     )
     first_audio_at = None
+    sent_bytes = 0
     try:
         async for pcm_chunk in tts_service.synthesize_stream(text, voice=voice_id):
             await websocket.send_bytes(pcm_chunk)
+            sent_bytes += len(pcm_chunk)
             if clock is not None:
                 clock.add(len(pcm_chunk))
             if first_audio_at is None:
@@ -673,15 +677,23 @@ async def _speak_sentence(
     await websocket.send_json(
         {"type": "audio_chunk_boundary", "phase": "end", "sentence_index": sentence_index}
     )
-    return first_audio_at
+    return first_audio_at, sent_bytes
 
 
-async def _speak_text(websocket, tts_service, session_id, text, voice_id, clock=None) -> None:
+def _audio_ms(pcm_bytes: int) -> int:
+    return round(pcm_bytes * 1000 / PCM_BYTES_PER_SECOND)
+
+
+async def _speak_text(websocket, tts_service, session_id, text, voice_id, clock=None) -> int:
     """Split already-known static text (a scenario's opening line, not a
     live LLM stream) into the same sentence-chunked TTS shape as a normal
-    reply, so the client needs no separate code path for it."""
+    reply, so the client needs no separate code path for it. Returns the
+    PCM bytes sent."""
+    total = 0
     for i, sentence in enumerate(split_sentences(text)):
-        await _speak_sentence(websocket, tts_service, session_id, sentence, i, voice_id, clock)
+        _, sent = await _speak_sentence(websocket, tts_service, session_id, sentence, i, voice_id, clock)
+        total += sent
+    return total
 
 
 def _interview_progress(interview: InterviewState) -> dict:
@@ -718,16 +730,18 @@ async def _handle_turn(
 
     await websocket.send_json({"type": "transcript_final", "text": transcript})
     plan = interview.plan_turn(transcript) if interview is not None else None
-    await db.add_turn(session_id, "user", transcript, question_idx=plan.question_idx if plan else None)
+    await db.add_turn(session_id, "user", transcript, question_idx=plan.question_idx if plan else None,
+                      audio_ms=_audio_ms(len(utterance_pcm)))
     await websocket.send_json({"type": "session_state", "state": "speaking"})
     t_stt = time.monotonic()
     t_first_sentence = t_first_audio = None
 
     if plan is not None and plan.kind == "scripted":
         # Interview: skip / repeat, or "okay" + next question — no LLM.
-        await _speak_text(websocket, tts_service, session_id, plan.scripted_text, voice_id, clock)
+        sent = await _speak_text(websocket, tts_service, session_id, plan.scripted_text, voice_id, clock)
         await conversation_engine.append_exchange(session_id, transcript, plan.scripted_text)
-        await db.add_turn(session_id, "assistant", plan.scripted_text, question_idx=interview.index)
+        await db.add_turn(session_id, "assistant", plan.scripted_text, question_idx=interview.index,
+                          audio_ms=_audio_ms(sent))
         await _after_interview_turn(websocket, db, session_id, interview, plan)
         logger.info("ws_turn_timing", extra={
             "session_id": session_id, "interview_command": plan.command or "ack_next",
@@ -745,6 +759,7 @@ async def _handle_turn(
 
     try:
         sentence_index = 0
+        reply_bytes = 0
         full_reply = ""
         async for event in conversation_engine.generate_reply(
             session_id, llm_text, reply_suffix=reply_suffix if plan is not None else None
@@ -759,15 +774,17 @@ async def _handle_turn(
                 continue  # e.g. a sentence that was only emoji
             if t_first_sentence is None:
                 t_first_sentence = time.monotonic()
-            sent_at = await _speak_sentence(
+            sent_at, sent = await _speak_sentence(
                 websocket, tts_service, session_id, spoken, sentence_index, voice_id, clock
             )
+            reply_bytes += sent
             if t_first_audio is None:
                 t_first_audio = sent_at
             sentence_index += 1
         if full_reply.strip():
             await db.add_turn(session_id, "assistant", full_reply,
-                              question_idx=interview.index if interview is not None else None)
+                              question_idx=interview.index if interview is not None else None,
+                              audio_ms=_audio_ms(reply_bytes))
         if plan is not None:
             await _after_interview_turn(websocket, db, session_id, interview, plan)
         # Per-turn latency breakdown, all relative to VAD speech_end
