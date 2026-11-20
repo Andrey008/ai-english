@@ -126,6 +126,12 @@ small local-LLM prompt, skipped when there is nothing to look at:
   anchored to the character line playing or just played; up to
   `vocabulary.max_words_per_bookmark` hard words are picked from it.
 
+Words can also be typed in by hand (`POST /vocabulary` `{"word": ...,
+"translation_ru": optional}`, the "Add word" button), e.g. mid-conversation
+so as not to interrupt the character. They are saved at once with no LLM
+call; their translation and explanation are filled in after the
+conversation, or right away when none is running.
+
 API: `GET /vocabulary?status=new|added|dismissed`, `PATCH
 /vocabulary/{id}` `{"status": ...}`, `POST /vocabulary/status` `{"ids":
 [...], "status": ...}`, `DELETE /vocabulary/{id}`. A word heard again

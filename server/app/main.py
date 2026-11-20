@@ -270,6 +270,22 @@ def create_app() -> FastAPI:
         rows = await app.state.db.list_vocabulary(status)
         return [vocabulary_item(row, app.state.preset_store) for row in rows]
 
+    @app.post("/vocabulary", status_code=201)
+    async def add_vocabulary(body: VocabularyAdd) -> dict:
+        """A word typed in by hand. Saved at once; translation and
+        explanation are filled in by the local LLM afterwards — after the
+        conversation if one is running (not to slow it down), else now."""
+        active = app.state.session_registry.held_session_id
+        service = app.state.vocabulary_service
+        word_id = await service.add_manual(body.word, body.translation_ru, active)
+        if word_id is None:
+            raise HTTPException(status_code=422, detail="not a word or a short expression")
+        if active is None:
+            task = asyncio.create_task(service.enrich_pending())
+            app.state.background_tasks.add(task)
+            task.add_done_callback(app.state.background_tasks.discard)
+        return vocabulary_item(await app.state.db.get_vocabulary(word_id), app.state.preset_store)
+
     @app.post("/vocabulary/status")
     async def set_vocabulary_statuses(body: VocabularyBulkStatus) -> dict:
         """Several at once, e.g. everything just copied → `added`."""
@@ -298,6 +314,11 @@ VOCAB_STATUS_PATTERN = r"^(new|added|dismissed)$"
 
 class VocabularyStatus(BaseModel):
     status: str = Field(pattern=VOCAB_STATUS_PATTERN)
+
+
+class VocabularyAdd(BaseModel):
+    word: str = Field(min_length=1, max_length=80, pattern=r"\S")
+    translation_ru: str | None = Field(None, max_length=80)
 
 
 class VocabularyBulkStatus(VocabularyStatus):

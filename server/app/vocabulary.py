@@ -10,6 +10,11 @@ watermark then moves to the newest turn, so a resumed conversation's old
 history is never analysed again; turns of a visit that ended without a
 clean `session_end` are picked up by the next one.
 
+Words can also be typed in by hand (`add_manual`), e.g. mid-conversation
+so as not to interrupt the character. Those are saved at once with no
+LLM call; `enrich_pending` fills in their translation and explanation
+after the conversation (or right away when none is running).
+
 Two triggers:
 - the user asked about a word ("what does X mean?") — the word is then
   taken from the character's line, whose spelling is exact (the user's
@@ -22,6 +27,7 @@ conversation model, like character memory.
 """
 from __future__ import annotations
 
+import asyncio
 import difflib
 import json
 import logging
@@ -59,7 +65,7 @@ SIMILAR_MIN = 0.7  # difflib ratio, tolerant of STT misspellings ("crispy", "rob
 CONTEXT_BEFORE = 2
 CONTEXT_AFTER = 1
 WORD_MAX_CHARS = 60
-WORD_MAX_TOKENS = 6
+WORD_MAX_TOKENS = 8  # "take it with a grain of salt"
 CONTEXT_MAX_CHARS = 240
 
 # Two small prompts rather than one: asked together, gemma2 returned
@@ -94,6 +100,14 @@ Answer with JSON only: {{"words": [...]}}
 
 LINES:
 {lines}"""
+
+
+ENRICH_PROMPT = """For each English word or expression below, give a short, simple English explanation (at most 12 words) and a Russian translation (1-4 words). Where a sentence is given, explain the meaning used in it.
+
+Answer with JSON only: {{"words": [{{"n": 1, "explanation": "...", "translation_ru": "..."}}, ...]}}
+
+WORDS:
+{words}"""
 
 
 def word_key(word: str) -> str:
@@ -273,6 +287,30 @@ def merge(*groups: list[dict]) -> list[dict]:
     return list(out.values())
 
 
+def clean_word(word: str) -> str | None:
+    """User-typed word → stored form, or None if it can't be one."""
+    word = _flat(word).strip(" .,!?;:\"'*“”")
+    if not word or len(word) > WORD_MAX_CHARS or len(word.split()) > WORD_MAX_TOKENS:
+        return None
+    return word
+
+
+def context_in(word: str, lines: list[str]) -> str | None:
+    """The first of `lines` (newest first) that says the word."""
+    return next((c for text in lines if (c := find_context(word, text))), None)
+
+
+def parse_enrichment(raw: str, count: int) -> dict[int, dict]:
+    """Enrich-prompt JSON → {0-based index: {explanation, translation_ru}}."""
+    out: dict[int, dict] = {}
+    for item in _items(raw):
+        idx = _index(item.get("n"))
+        if 0 <= idx < count and idx not in out:
+            out[idx] = {"explanation": _text(item.get("explanation"), 160),
+                        "translation_ru": _text(item.get("translation_ru"), 80)}
+    return out
+
+
 def _index(value: Any) -> int:
     """A 1-based line number from the LLM → 0-based index (-1 if invalid)."""
     try:
@@ -295,6 +333,44 @@ class VocabularyService:
         self._keep_alive = str(config["llm"].get("keep_alive", "1h"))
         self._db = db
         self._client = ollama.AsyncClient()
+        self._enrich_lock = asyncio.Lock()
+
+    async def add_manual(self, word: str, translation_ru: str | None, session_id: str | None) -> str | None:
+        """Save a typed-in word now, no LLM (a conversation may be live).
+        Its context comes from the conversation it was typed in, if the
+        character said it there. Returns the word's id, None if invalid."""
+        word = clean_word(word)
+        if word is None:
+            return None
+        context = context_in(word, await self._db.recent_assistant_lines(session_id)) if session_id else None
+        return await self._db.add_manual_word(
+            {"word": word, "word_key": word_key(word), "context": context,
+             "translation_ru": _text(translation_ru, 80)},
+            session_id,
+        )
+
+    async def enrich_pending(self) -> int:
+        """Fill in translation/explanation (and context, from the word's
+        conversation) for words typed in by hand. Returns how many."""
+        async with self._enrich_lock:
+            rows = await self._db.vocabulary_to_enrich()
+            if not rows:
+                return 0
+            for row in rows:
+                if not row["context"] and row["session_id"]:
+                    row["context"] = context_in(row["word"], await self._db.recent_assistant_lines(row["session_id"]))
+            listing = "\n".join(
+                f'{i}. {row["word"]}' + (f' — "{row["context"]}"' if row["context"] else "")
+                for i, row in enumerate(rows, start=1)
+            )
+            raw = await self._ask("enrich", ENRICH_PROMPT.format(words=listing))
+            filled = parse_enrichment(raw, len(rows)) if raw is not None else {}
+            for i, row in enumerate(rows):
+                got = filled.get(i, {})
+                await self._db.fill_vocabulary(row["id"], row["context"], got.get("explanation"),
+                                               got.get("translation_ru"))
+            logger.info("vocabulary_enriched", extra={"words": len(rows), "filled": len(filled)})
+            return len(filled)
 
     async def scan_session(self, session_id: str, english_level: str = "B1") -> list[dict] | None:
         """Analyse the visit since the watermark; returns the words saved

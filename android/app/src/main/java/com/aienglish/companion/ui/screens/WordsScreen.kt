@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.MoreVert
@@ -24,6 +25,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
@@ -85,6 +87,7 @@ fun WordsScreen() {
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     var filter by remember { mutableStateOf(WordsFilter.NEW) }
+    var adding by remember { mutableStateOf(false) }
 
     suspend fun refresh() {
         loading = true
@@ -138,8 +141,29 @@ fun WordsScreen() {
         }
     }
 
+    if (adding) {
+        AddWordDialog(
+            onDismiss = { adding = false },
+            onAdded = { added ->
+                adding = false
+                words = listOf(added) + words.orEmpty().filterNot { it.id == added.id }
+                filter = WordsFilter.NEW
+                if (added.status != STATUS_NEW) {
+                    scope.launch { snackbar.showSnackbar("“${added.word}” is already in your list.") }
+                }
+            },
+        )
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = { adding = true },
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text("Add word") },
+            )
+        },
         topBar = {
             LargeTopAppBar(
                 title = { Text("Words") },
@@ -195,7 +219,8 @@ fun WordsScreen() {
                     EmptyWords(filter, Modifier.weight(1f))
                 } else {
                     LazyColumn(
-                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
+                        // Bottom room for the FAB.
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 96.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.weight(1f),
                     ) {
@@ -239,6 +264,14 @@ private fun WordCard(word: VocabularyWord, onStatus: (String) -> Unit, onDelete:
                 }
             }
             Column(Modifier.padding(end = 12.dp)) {
+                if (word.explanation == null && word.translationRu == null) {
+                    Text(
+                        "Translation coming after the conversation…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
                 word.explanation?.let {
                     Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
                 }
@@ -275,7 +308,11 @@ private fun WordCard(word: VocabularyWord, onStatus: (String) -> Unit, onDelete:
 
 /** "Asked · Emma · Weekend walk · 2×" — where the word came from. */
 internal fun wordOrigin(word: VocabularyWord): String = listOfNotNull(
-    if (word.source == "bookmark") "Bookmarked" else "Asked",
+    when (word.source) {
+        "bookmark" -> "Bookmarked"
+        "manual" -> "Added by you"
+        else -> "Asked"
+    },
     word.characterName,
     word.sessionTitle,
     if (word.timesSeen > 1) "${word.timesSeen}×" else null,
@@ -300,7 +337,7 @@ private fun EmptyWords(filter: WordsFilter, modifier: Modifier) {
             Text(
                 "When you ask what a word means (“What does crisp mean?”) or tap “Unknown word” during a " +
                     "conversation, the word shows up here after the conversation ends — with a translation " +
-                    "and the sentence you heard it in.",
+                    "and the sentence you heard it in. Or add one yourself with “Add word”.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,

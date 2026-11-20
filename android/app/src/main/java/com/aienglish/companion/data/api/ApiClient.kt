@@ -94,6 +94,11 @@ class ApiClient(
     suspend fun listVocabulary(status: String? = null): ApiResult<List<VocabularyWord>> =
         decoded(request("GET", if (status != null) "/vocabulary?status=$status" else "/vocabulary"))
 
+    /** Save a word typed in by hand. The server fills in its translation
+     * and explanation later (after the conversation, if one is running). */
+    suspend fun addVocabulary(word: String, translationRu: String? = null): ApiResult<VocabularyWord> =
+        decoded(request("POST", "/vocabulary", json.encodeToString(VocabularyAdd(word, translationRu))))
+
     suspend fun setVocabularyStatus(id: String, status: String): ApiResult<VocabularyWord> =
         decoded(request("PATCH", "/vocabulary/$id", json.encodeToString(VocabularyStatus(status))))
 

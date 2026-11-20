@@ -24,6 +24,7 @@ class VocabularyParseTest {
         assertEquals("Asked · Emma · Autumn walk · 2×", wordOrigin(words[0]))
         assertEquals("Bookmarked", wordOrigin(words[1]))
         assertEquals(VocabularyWord.STATUS_ADDED, words[1].status)
+        assertEquals("Added by you", wordOrigin(VocabularyWord(id = "3", word = "gist", source = "manual")))
     }
 
     @Test

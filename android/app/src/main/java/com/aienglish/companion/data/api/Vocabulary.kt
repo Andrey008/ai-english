@@ -13,7 +13,7 @@ data class VocabularyWord(
     val context: String? = null,
     val explanation: String? = null,
     @SerialName("translation_ru") val translationRu: String? = null,
-    /** `asked` | `bookmark`. */
+    /** `asked` | `bookmark` | `manual`. */
     val source: String = "asked",
     val status: String = STATUS_NEW,
     @SerialName("times_seen") val timesSeen: Int = 1,
@@ -32,6 +32,13 @@ data class VocabularyWord(
 
 @Serializable
 data class VocabularyStatus(val status: String)
+
+/** `POST /vocabulary`: a word typed in by hand. */
+@Serializable
+data class VocabularyAdd(
+    val word: String,
+    @SerialName("translation_ru") val translationRu: String? = null,
+)
 
 @Serializable
 data class VocabularyBulkStatus(val ids: List<String>, val status: String)

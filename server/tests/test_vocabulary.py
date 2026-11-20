@@ -296,3 +296,51 @@ def test_after_session_runs_the_pass_even_if_the_wrap_up_fails():
     Vocab.enabled = False
     asyncio.run(_after_session(app, "s", [], None, None, "B2"))
     assert len(calls) == 1
+
+
+def test_manual_word_is_saved_without_llm_and_enriched_later(tmp_path):
+    async def run():
+        db = make_db(tmp_path)
+        await db.start()
+        await db.create_session("s", character_id="emma")
+        await talk(db, "s", ("assistant", "The view was breathtaking. Do you like hiking?"))
+        fake = FakeOllama()
+        svc = service(db, fake)
+        wid = await svc.add_manual("  Breathtaking! ", None, "s")
+        row = await db.get_vocabulary(wid)
+        assert (row["word"], row["source"], row["context"]) == ("Breathtaking", "manual", "The view was breathtaking.")
+        assert row["translation_ru"] is None and fake.prompts == []  # nothing during the conversation
+
+        await svc.add_manual("serendipity", "интуитивная прозорливость", None)  # own translation, no context
+        fake.reply = {"words": [{"n": 1, "explanation": "amazingly beautiful", "translation_ru": "захватывающий"},
+                                {"n": 2, "explanation": "a lucky accident", "translation_ru": "случайность"}]}
+        assert await svc.enrich_pending() == 2
+        assert '1. Breathtaking — "The view was breathtaking."' in fake.prompts[0]
+        rows = {r["word"]: r for r in await db.list_vocabulary()}
+        assert rows["Breathtaking"]["translation_ru"] == "захватывающий"
+        assert rows["serendipity"]["translation_ru"] == "интуитивная прозорливость"  # the user's own kept
+        assert rows["serendipity"]["explanation"] == "a lucky accident"
+        assert await svc.enrich_pending() == 0  # nothing left → no call
+        assert len(fake.prompts) == 1
+
+        # typed again: counted, not duplicated
+        assert await svc.add_manual("breathtaking", None, None) == wid
+        assert (await db.get_vocabulary(wid))["times_seen"] == 2
+        assert await svc.add_manual("   ", None, None) is None
+        assert await svc.add_manual("one two three four five six seven eight nine", None, None) is None
+        await db.stop()
+
+    asyncio.run(run())
+
+
+def test_enrichment_failure_leaves_words_for_a_retry(tmp_path):
+    async def run():
+        db = make_db(tmp_path)
+        await db.start()
+        svc = service(db, FakeOllama(fail=True))
+        await svc.add_manual("gist", None, None)
+        assert await svc.enrich_pending() == 0
+        assert len(await db.vocabulary_to_enrich()) == 1
+        await db.stop()
+
+    asyncio.run(run())

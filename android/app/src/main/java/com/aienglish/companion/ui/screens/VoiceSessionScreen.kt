@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
@@ -89,6 +90,23 @@ fun VoiceSessionScreen(onClose: () -> Unit) {
     var errorMessage by remember { mutableStateOf<String?>(null) }
     // Bumped on each `bookmark_saved`; the button shows "saved" for a moment.
     var bookmarkAck by remember { mutableStateOf(0) }
+    var addingWord by remember { mutableStateOf(false) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            delay(2500)
+            notice = null
+        }
+    }
+    if (addingWord) {
+        AddWordDialog(
+            onDismiss = { addingWord = false },
+            onAdded = { added ->
+                addingWord = false
+                notice = "“${added.word}” saved to Words"
+            },
+        )
+    }
 
     LaunchedEffect(Unit) {
         appContainer.wsSessionClient.events.collect { event ->
@@ -118,6 +136,12 @@ fun VoiceSessionScreen(onClose: () -> Unit) {
                 navigationIcon = {
                     IconButton(onClick = onClose) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to conversations")
+                    }
+                },
+                actions = {
+                    // Type a word in without interrupting the character (AE-5).
+                    IconButton(onClick = { addingWord = true }) {
+                        Icon(Icons.Default.PlaylistAdd, contentDescription = "Add a word to Words")
                     }
                 },
                 title = {
@@ -177,6 +201,17 @@ fun VoiceSessionScreen(onClose: () -> Unit) {
                         Text(message, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                         TextButton(onClick = { errorMessage = null }) { Text("Dismiss") }
                     }
+                }
+            }
+
+            notice?.let { message ->
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    Text(message, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(16.dp))
                 }
             }
 

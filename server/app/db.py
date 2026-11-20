@@ -361,6 +361,63 @@ class Database:
         )
         await self._conn.commit()
 
+    async def add_manual_word(self, item: dict, session_id: str | None) -> str:
+        """A word the user typed in (AE-5). Returns its id; one already in
+        the list is counted again, keeps its status, and only gains the
+        fields it was missing."""
+        assert self._conn is not None
+        now = _now()
+        await self._conn.execute(
+            """
+            INSERT INTO vocabulary (id, word, word_key, context, explanation, translation_ru, source,
+                                    session_id, created_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?)
+            ON CONFLICT(word_key) DO UPDATE SET
+                context = COALESCE(context, excluded.context),
+                explanation = COALESCE(explanation, excluded.explanation),
+                translation_ru = COALESCE(excluded.translation_ru, translation_ru),
+                session_id = COALESCE(excluded.session_id, session_id),
+                times_seen = times_seen + 1,
+                last_seen_at = excluded.last_seen_at
+            """,
+            (str(uuid.uuid4()), item["word"], item["word_key"], item.get("context"), item.get("explanation"),
+             item.get("translation_ru"), session_id, now, now),
+        )
+        await self._conn.commit()
+        cursor = await self._conn.execute("SELECT id FROM vocabulary WHERE word_key = ?", (item["word_key"],))
+        return (await cursor.fetchone())["id"]
+
+    async def vocabulary_to_enrich(self, limit: int = 20) -> list[dict]:
+        """Words still missing a translation or an explanation (typed in
+        by hand), oldest first."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT id, word, context, session_id FROM vocabulary"
+            " WHERE status != 'dismissed' AND (translation_ru IS NULL OR explanation IS NULL)"
+            " ORDER BY created_at LIMIT ?",
+            (limit,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def fill_vocabulary(self, word_id: str, context: str | None, explanation: str | None,
+                              translation_ru: str | None) -> None:
+        """Fill only what is still empty — never overwrite the user's own text."""
+        assert self._conn is not None
+        await self._conn.execute(
+            "UPDATE vocabulary SET context = COALESCE(context, ?), explanation = COALESCE(explanation, ?),"
+            " translation_ru = COALESCE(translation_ru, ?) WHERE id = ?",
+            (context, explanation, translation_ru, word_id),
+        )
+        await self._conn.commit()
+
+    async def recent_assistant_lines(self, session_id: str, limit: int = 30) -> list[str]:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT text FROM turns WHERE session_id = ? AND role = 'assistant' ORDER BY ts DESC LIMIT ?",
+            (session_id, limit),
+        )
+        return [row["text"] for row in await cursor.fetchall()]
+
     async def list_vocabulary(self, status: str | None = None) -> list[dict]:
         assert self._conn is not None
         where, args = ("WHERE v.status = ?", (status,)) if status else ("", ())

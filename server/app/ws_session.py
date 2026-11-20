@@ -622,6 +622,7 @@ async def _after_session(
     if vocabulary.enabled:
         try:
             await vocabulary.scan_session(session_id, english_level)
+            await vocabulary.enrich_pending()  # words typed in by hand meanwhile
         except Exception:
             logger.exception("vocabulary_scan_error", extra={"session_id": session_id})
     try:
