@@ -194,6 +194,7 @@ class Database:
         assert self._conn is not None
         await self._conn.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
         await self._conn.execute("DELETE FROM interview_items WHERE session_id = ?", (session_id,))
+        await self._conn.execute("DELETE FROM bookmarks WHERE session_id = ?", (session_id,))
         cursor = await self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         await self._conn.commit()
         return cursor.rowcount > 0
@@ -295,6 +296,107 @@ class Database:
             (sessions,),
         )
         return {row["question_id"] for row in await cursor.fetchall()}
+
+    # --- vocabulary (AE-5) --------------------------------------------------
+
+    async def add_bookmark(self, session_id: str) -> str:
+        assert self._conn is not None
+        ts = _now()
+        await self._conn.execute(
+            "INSERT INTO bookmarks (id, session_id, ts) VALUES (?, ?, ?)", (str(uuid.uuid4()), session_id, ts)
+        )
+        await self._conn.commit()
+        return ts
+
+    async def vocab_scan_input(self, session_id: str) -> tuple[str | None, dict | None, list[dict], list[str]]:
+        """(watermark, the last assistant turn at or before it, the turns
+        after it, bookmark timestamps after it) — what the vocabulary pass
+        reads for one visit."""
+        assert self._conn is not None
+        cursor = await self._conn.execute("SELECT vocab_scanned_until FROM sessions WHERE id = ?", (session_id,))
+        row = await cursor.fetchone()
+        watermark = row["vocab_scanned_until"] if row else None
+        before = None
+        if watermark:
+            cursor = await self._conn.execute(
+                "SELECT role, text, ts FROM turns WHERE session_id = ? AND role = 'assistant' AND ts <= ?"
+                " ORDER BY ts DESC LIMIT 1",
+                (session_id, watermark),
+            )
+            found = await cursor.fetchone()
+            before = dict(found) if found else None
+        turns = await self.get_transcript(session_id, since=watermark)
+        cursor = await self._conn.execute(
+            "SELECT ts FROM bookmarks WHERE session_id = ? AND ts > ? ORDER BY ts", (session_id, watermark or "")
+        )
+        bookmarks = [r["ts"] for r in await cursor.fetchall()]
+        return watermark, before, turns, bookmarks
+
+    async def set_vocab_watermark(self, session_id: str, ts: str) -> None:
+        assert self._conn is not None
+        await self._conn.execute("UPDATE sessions SET vocab_scanned_until = ? WHERE id = ?", (ts, session_id))
+        await self._conn.commit()
+
+    async def upsert_vocabulary(self, session_id: str, items: list[dict]) -> None:
+        """items: word, word_key, context, explanation, translation_ru,
+        source. A word already in the list is counted again and gets the
+        newer context; its status (added/dismissed) is kept."""
+        assert self._conn is not None
+        now = _now()
+        await self._conn.executemany(
+            """
+            INSERT INTO vocabulary (id, word, word_key, context, explanation, translation_ru, source,
+                                    session_id, created_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(word_key) DO UPDATE SET
+                context = COALESCE(excluded.context, context),
+                explanation = COALESCE(excluded.explanation, explanation),
+                translation_ru = COALESCE(excluded.translation_ru, translation_ru),
+                session_id = excluded.session_id,
+                times_seen = times_seen + 1,
+                last_seen_at = excluded.last_seen_at
+            """,
+            [(str(uuid.uuid4()), i["word"], i["word_key"], i.get("context"), i.get("explanation"),
+              i.get("translation_ru"), i["source"], session_id, now, now) for i in items],
+        )
+        await self._conn.commit()
+
+    async def list_vocabulary(self, status: str | None = None) -> list[dict]:
+        assert self._conn is not None
+        where, args = ("WHERE v.status = ?", (status,)) if status else ("", ())
+        cursor = await self._conn.execute(
+            f"""
+            SELECT v.*, s.title AS session_title, s.character_id
+            FROM vocabulary v LEFT JOIN sessions s ON s.id = v.session_id
+            {where} ORDER BY v.last_seen_at DESC
+            """,
+            args,
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_vocabulary(self, word_id: str) -> dict | None:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT v.*, s.title AS session_title, s.character_id FROM vocabulary v"
+            " LEFT JOIN sessions s ON s.id = v.session_id WHERE v.id = ?",
+            (word_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def set_vocabulary_status(self, word_ids: list[str], status: str) -> int:
+        assert self._conn is not None
+        cursor = await self._conn.executemany(
+            "UPDATE vocabulary SET status = ? WHERE id = ?", [(status, wid) for wid in word_ids]
+        )
+        await self._conn.commit()
+        return cursor.rowcount
+
+    async def delete_vocabulary(self, word_id: str) -> bool:
+        assert self._conn is not None
+        cursor = await self._conn.execute("DELETE FROM vocabulary WHERE id = ?", (word_id,))
+        await self._conn.commit()
+        return cursor.rowcount > 0
 
     # --- devices (ADR-0017) -------------------------------------------------
 

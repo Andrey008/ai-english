@@ -7,6 +7,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -35,6 +36,7 @@ import com.aienglish.companion.ui.screens.ServerSetupScreen
 import com.aienglish.companion.ui.screens.SettingsScreen
 import com.aienglish.companion.ui.screens.StatsScreen
 import com.aienglish.companion.ui.screens.VoiceSessionScreen
+import com.aienglish.companion.ui.screens.WordsScreen
 
 private data class BottomDestination(
     val route: String,
@@ -45,6 +47,7 @@ private data class BottomDestination(
 private val bottomDestinations = listOf(
     BottomDestination(Routes.Conversations, "Conversations", Icons.AutoMirrored.Filled.Chat),
     BottomDestination(Routes.CharacterList, "Characters", Icons.AutoMirrored.Filled.List),
+    BottomDestination(Routes.Words, "Words", Icons.Default.Translate),
     BottomDestination(Routes.Stats, "Stats", Icons.Default.BarChart),
     BottomDestination(Routes.Settings, "Settings", Icons.Default.Settings),
 )
@@ -183,6 +186,7 @@ fun AppNavHost(serverConfigStore: ServerConfigStore, startDestination: String) {
                     onOpenGuide = { navController.navigate(Routes.CharacterGuide) },
                 )
             }
+            composable(Routes.Words) { WordsScreen() }
             composable(Routes.Stats) { StatsScreen() }
             composable(Routes.Settings) { SettingsScreen() }
         }

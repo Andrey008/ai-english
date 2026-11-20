@@ -42,6 +42,10 @@ Client -> Server:
   Questions come from the prep base; if it can't be read the server sends
   `error` and closes with 4503. Scenario and memory are ignored.
 - `{"type": "session_end"}` — clean end, releases the session for good.
+- `{"type": "bookmark"}` — "I didn't get a word here" (AE-5): marks the
+  character line playing or just played; after the session the
+  vocabulary pass picks the hard words out of it. Acked with
+  `bookmark_saved`.
 - (binary) mic audio chunks, any size, PCM16/16kHz/mono.
 
 Server -> Client:
@@ -64,6 +68,7 @@ Server -> Client:
   "finished"}` when the current question changes; `{"type":
   "interview_finished"}` after the closing line has played — the server
   then ends the session itself (`session_ended` follows).
+- `{"type": "bookmark_saved"}` — reply to a client `bookmark`.
 - `{"type": "error", "message": "..."}` — non-fatal unless followed by close.
 - `{"type": "session_ended"}`
 
@@ -545,6 +550,10 @@ async def handle_ws_session(websocket: WebSocket) -> None:
                 if payload.get("type") == "session_end":
                     clean_end = True
                     break
+                if payload.get("type") == "bookmark":
+                    await db.add_bookmark(session_id)
+                    logger.info("ws_bookmark", extra={"session_id": session_id})
+                    await websocket.send_json({"type": "bookmark_saved"})
 
     except WebSocketDisconnect:
         logger.info("ws_session_disconnected", extra={"session_id": session_id})
@@ -574,7 +583,7 @@ async def handle_ws_session(websocket: WebSocket) -> None:
             # Fire-and-forget: fully off the session-teardown path, let
             # alone the live conversation's — the client doesn't wait on
             # this to get its session_ended ack.
-            asyncio.create_task(_after_session(app, session_id, history, preset, memory_since))
+            asyncio.create_task(_after_session(app, session_id, history, preset, memory_since, english_level))
             try:
                 await websocket.send_json({"type": "session_ended"})
             except Exception:
@@ -589,10 +598,14 @@ def _level(stored: str | None) -> str:
     return stored if stored in ENGLISH_LEVELS else DEFAULT_ENGLISH_LEVEL
 
 
-async def _after_session(app, session_id: str, history: list[dict] | None, preset, memory_since: str | None) -> None:
+async def _after_session(
+    app, session_id: str, history: list[dict] | None, preset, memory_since: str | None,
+    english_level: str = DEFAULT_ENGLISH_LEVEL,
+) -> None:
     """Wrap-up (title, plus notes when a resume would need them, ADR-0015)
-    first, while Ollama still has this history cached; then the character
-    memory, which re-reads the transcript anyway."""
+    first, while Ollama still has this history cached; then the
+    vocabulary pass (AE-5) and the character memory, which re-read the
+    transcript anyway."""
     db, engine = app.state.db, app.state.conversation_engine
     try:
         turns = await db.get_transcript(session_id)
@@ -603,6 +616,15 @@ async def _after_session(app, session_id: str, history: list[dict] | None, prese
             title, notes = await engine.wrap_up(session_id, history, with_notes)
             if title or notes:
                 await db.save_wrap_up(session_id, title, notes, len(turns))
+    except Exception:
+        logger.exception("ws_after_session_error", extra={"session_id": session_id})
+    vocabulary = app.state.vocabulary_service
+    if vocabulary.enabled:
+        try:
+            await vocabulary.scan_session(session_id, english_level)
+        except Exception:
+            logger.exception("vocabulary_scan_error", extra={"session_id": session_id})
+    try:
         if preset is not None and preset.memory_enabled:
             await app.state.character_memory_service.update_after_session(
                 session_id, preset.id, preset.name, since=memory_since

@@ -14,7 +14,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
-/** Typed client for `/characters`, `/scenarios`, `/conversations` and `/stats`
+/** Typed client for `/characters`, `/scenarios`, `/conversations`, `/stats`
+ * and `/vocabulary`
  * (`server/app/main.py`).
  * Reads the server config fresh on every call (via [configProvider]) so a
  * user changing it in Settings (`STORY-05-10`) doesn't require restarting
@@ -87,6 +88,20 @@ class ApiClient(
      * (an IANA zone id, the phone's own by default). */
     suspend fun stats(days: Int = 30, tz: String = java.time.ZoneId.systemDefault().id): ApiResult<PracticeStats> =
         decoded(request("GET", "/stats?days=$days&tz=${java.net.URLEncoder.encode(tz, "UTF-8")}"))
+
+    /** Words collected from conversations (AE-5), newest first; [status]
+     * filters (`new` / `added` / `dismissed`), null returns all. */
+    suspend fun listVocabulary(status: String? = null): ApiResult<List<VocabularyWord>> =
+        decoded(request("GET", if (status != null) "/vocabulary?status=$status" else "/vocabulary"))
+
+    suspend fun setVocabularyStatus(id: String, status: String): ApiResult<VocabularyWord> =
+        decoded(request("PATCH", "/vocabulary/$id", json.encodeToString(VocabularyStatus(status))))
+
+    suspend fun setVocabularyStatuses(ids: List<String>, status: String): ApiResult<Unit> =
+        toUnit(raw(request("POST", "/vocabulary/status", json.encodeToString(VocabularyBulkStatus(ids, status)))))
+
+    suspend fun deleteVocabulary(id: String): ApiResult<Unit> =
+        toUnit(raw(request("DELETE", "/vocabulary/$id")))
 
     /** The device this token belongs to — checks address and token together. */
     suspend fun authMe(): ApiResult<AuthMe> = decoded(request("GET", "/auth/me"))

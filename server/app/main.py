@@ -24,6 +24,7 @@ from app.session_registry import SessionRegistry
 from app.stats import DEFAULT_IDLE_CAP_S, compute_stats
 from app.stt_service import STTService
 from app.tts_service import TTSService
+from app.vocabulary import VocabularyService
 from app.ws_session import handle_ws_session
 
 logger = logging.getLogger("ai_english.server")
@@ -55,6 +56,7 @@ def create_app() -> FastAPI:
     app.state.preset_store = PresetStore(config)
     app.state.scenario_store = ScenarioStore(config)
     app.state.character_memory_service = CharacterMemoryService(config, app.state.db)
+    app.state.vocabulary_service = VocabularyService(config, app.state.db)
     app.state.claude_gateway = ClaudeGateway(config)
     app.state.prep_client = PrepClient(config)
     app.state.background_tasks = set()
@@ -262,10 +264,63 @@ def create_app() -> FastAPI:
             character_name=name, is_interview=is_interview,
         )
 
+    @app.get("/vocabulary")
+    async def list_vocabulary(status: str | None = Query(None, pattern=VOCAB_STATUS_PATTERN)) -> list[dict]:
+        """Words collected from conversations (AE-5), newest first."""
+        rows = await app.state.db.list_vocabulary(status)
+        return [vocabulary_item(row, app.state.preset_store) for row in rows]
+
+    @app.post("/vocabulary/status")
+    async def set_vocabulary_statuses(body: VocabularyBulkStatus) -> dict:
+        """Several at once, e.g. everything just copied → `added`."""
+        await app.state.db.set_vocabulary_status(body.ids, body.status)
+        return {"updated": len(body.ids)}
+
+    @app.patch("/vocabulary/{word_id}")
+    async def set_vocabulary_status(word_id: str, body: VocabularyStatus) -> dict:
+        db = app.state.db
+        if await db.get_vocabulary(word_id) is None:
+            raise HTTPException(status_code=404, detail=f"word {word_id!r} not found")
+        await db.set_vocabulary_status([word_id], body.status)
+        return vocabulary_item(await db.get_vocabulary(word_id), app.state.preset_store)
+
+    @app.delete("/vocabulary/{word_id}", status_code=204)
+    async def delete_vocabulary(word_id: str) -> None:
+        if not await app.state.db.delete_vocabulary(word_id):
+            raise HTTPException(status_code=404, detail=f"word {word_id!r} not found")
+
     return app
 
 
 TOPIC_MAX_CHARS = 80
+VOCAB_STATUS_PATTERN = r"^(new|added|dismissed)$"
+
+
+class VocabularyStatus(BaseModel):
+    status: str = Field(pattern=VOCAB_STATUS_PATTERN)
+
+
+class VocabularyBulkStatus(VocabularyStatus):
+    ids: list[str] = Field(min_length=1, max_length=500)
+
+
+def vocabulary_item(row: dict, preset_store: PresetStore) -> dict:
+    preset = preset_store.get(row["character_id"]) if row.get("character_id") else None
+    return {
+        "id": row["id"],
+        "word": row["word"],
+        "context": row.get("context"),
+        "explanation": row.get("explanation"),
+        "translation_ru": row.get("translation_ru"),
+        "source": row["source"],
+        "status": row["status"],
+        "times_seen": row["times_seen"],
+        "created_at": row["created_at"],
+        "last_seen_at": row["last_seen_at"],
+        "session_id": row.get("session_id"),
+        "session_title": row.get("session_title"),
+        "character_name": preset.name if preset else None,
+    }
 
 
 class ConversationRename(BaseModel):

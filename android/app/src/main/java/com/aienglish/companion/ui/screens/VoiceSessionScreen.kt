@@ -25,12 +25,15 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -51,6 +54,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.aienglish.companion.data.ws.SessionPhase
@@ -82,6 +87,8 @@ fun VoiceSessionScreen(onClose: () -> Unit) {
     // owned locally — either source toggling mute must show up here.
     val muted by appContainer.audioSessionController.mutedFlow.collectAsState()
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    // Bumped on each `bookmark_saved`; the button shows "saved" for a moment.
+    var bookmarkAck by remember { mutableStateOf(0) }
 
     LaunchedEffect(Unit) {
         appContainer.wsSessionClient.events.collect { event ->
@@ -92,6 +99,7 @@ fun VoiceSessionScreen(onClose: () -> Unit) {
                 is WsEvent.ReconnectFailed -> errorMessage = "Couldn't reconnect. Go back and continue the conversation again."
                 is WsEvent.ConnectRefused -> errorMessage = event.message
                 is WsEvent.SessionReady -> errorMessage = null
+                is WsEvent.BookmarkSaved -> bookmarkAck++
                 else -> Unit
             }
         }
@@ -133,6 +141,11 @@ fun VoiceSessionScreen(onClose: () -> Unit) {
                     if (sessionActive) {
                         MicButton(muted, listening = sessionPhase == SessionPhase.LISTENING) {
                             appContainer.audioSessionController.toggleMute()
+                        }
+                        BookmarkButton(bookmarkAck) {
+                            if (!appContainer.wsSessionClient.sendBookmark()) {
+                                errorMessage = "Not connected — the bookmark wasn't saved."
+                            }
                         }
                         FilledIconButton(
                             onClick = {
@@ -206,6 +219,38 @@ private fun StatusLine(phase: SessionPhase?, active: Boolean, muted: Boolean) {
                 .background(color.copy(alpha = if (active && phase != null) alpha else 1f), CircleShape),
         )
         Text(label, style = MaterialTheme.typography.bodySmall, color = color, modifier = Modifier.padding(start = 6.dp))
+    }
+}
+
+/** "I didn't get a word here" (AE-5): marks the line being spoken (or just
+ * spoken); after the conversation its hard words land on the Words tab.
+ * [ack] changes each time the server confirms — the icon then fills for
+ * a moment. */
+@Composable
+private fun BookmarkButton(ack: Int, onClick: () -> Unit) {
+    val haptics = LocalHapticFeedback.current
+    var saved by remember { mutableStateOf(false) }
+    LaunchedEffect(ack) {
+        if (ack == 0) return@LaunchedEffect
+        saved = true
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        delay(1500)
+        saved = false
+    }
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        FilledTonalIconButton(onClick = onClick, modifier = Modifier.size(56.dp)) {
+            Icon(
+                if (saved) Icons.Default.Bookmark else Icons.Default.BookmarkAdd,
+                contentDescription = "Didn't get a word — save it for later",
+                modifier = Modifier.size(26.dp),
+            )
+        }
+        Text(
+            if (saved) "Saved" else "Unknown word",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }
 

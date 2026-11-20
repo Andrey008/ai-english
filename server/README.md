@@ -90,6 +90,30 @@ character and by kind (free / scenario / interview). Computed in
 - `words_per_minute` — only from measured audio, once there is ≥ 1 min
   of it. VAD padding and pauses are included, so it reads a bit low.
 
+## Vocabulary (AE-5)
+
+Words you didn't understand in a conversation, collected for learning in
+EnglishDom (added there by hand — no SRS here). `app/vocabulary.py`
+runs after a conversation ends, off the live path, and reads only the
+turns since `sessions.vocab_scanned_until`, so a resumed conversation's
+old history isn't analysed again (plus the last character line before
+it, in case you ask about it first thing). Two triggers, each its own
+small local-LLM prompt, skipped when there is nothing to look at:
+
+- **a re-ask** — "what does X mean?", "sorry, X?", "I didn't get this
+  word": the word is taken from the character's line (exact spelling;
+  your line is STT). It must be tied to that question — the question
+  names it (fuzzy, for STT typos) or names no word at all.
+- **a bookmark** — the WS `bookmark` frame ("Unknown word" button):
+  anchored to the character line playing or just played; up to
+  `vocabulary.max_words_per_bookmark` hard words are picked from it.
+
+API: `GET /vocabulary?status=new|added|dismissed`, `PATCH
+/vocabulary/{id}` `{"status": ...}`, `POST /vocabulary/status` `{"ids":
+[...], "status": ...}`, `DELETE /vocabulary/{id}`. A word heard again
+bumps `times_seen` and keeps its status. Words survive deleting the
+conversation. Off: `vocabulary.enabled: false`.
+
 ## Tests
 
 ```

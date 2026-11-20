@@ -26,6 +26,9 @@ sealed class WsEvent {
      * the session down. */
     data class ServerError(val message: String) : WsEvent()
 
+    /** The server stored a [WsSessionClient.sendBookmark] (AE-5). */
+    data object BookmarkSaved : WsEvent()
+
     /** Clean server-acknowledged end (either the client sent `session_end`,
      * or the server closed the session for another reason after this). */
     data object SessionEnded : WsEvent()

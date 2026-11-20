@@ -2,7 +2,7 @@ package com.aienglish.companion.ui.nav
 
 /** Nav-graph routes. No Feedback/Review route — cut from EPIC-05 entirely,
  * see Docs/decisions/ADR-0010-epic05-scope-cuts.md. Bottom-nav tabs are
- * [Conversations], [CharacterList], [Stats] and [Settings] (ADR-0015); everything
+ * [Conversations], [CharacterList], [Words], [Stats] and [Settings] (ADR-0015); everything
  * else is pushed on top and hides the bottom bar. */
 object Routes {
     const val ServerSetup = "server_setup"
@@ -31,6 +31,9 @@ object Routes {
 
     /** "How to make a great character", from the Characters tab and the creator. */
     const val CharacterGuide = "character_guide"
+
+    /** Words collected from conversations (`GET /vocabulary`, AE-5). */
+    const val Words = "words"
 
     /** Practice stats (`GET /stats`). */
     const val Stats = "stats"

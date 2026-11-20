@@ -146,6 +146,14 @@ class WsSessionClient(
         webSocket?.send(pcm.toByteString())
     }
 
+    /** "I didn't get a word here" (AE-5): the server marks the character
+     * line playing or just played, and picks the hard words out of it
+     * after the conversation. False if not connected right now. */
+    fun sendBookmark(): Boolean {
+        if (!sessionReady) return false
+        return webSocket?.send(buildJsonObject { put("type", "bookmark") }.toString()) == true
+    }
+
     fun endSession() {
         explicitlyEnded = true
         reconnectJob?.cancel()
@@ -306,6 +314,7 @@ class WsSessionClient(
             }
             "error" -> WsEvent.ServerError(obj["message"]?.jsonPrimitive?.content ?: "unknown error")
             "session_ended" -> WsEvent.SessionEnded
+            "bookmark_saved" -> WsEvent.BookmarkSaved
             else -> return
         }
         clientScope.launch { _events.emit(event) }
